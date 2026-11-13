@@ -209,7 +209,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private void spawnWave(World world, Clipboard clipboard, BlockVector3 pasteAt, int partySize) {
         String name = world.getName();
         if (!instanceWorlds.contains(name)) return;
-        String[] types = {"SkeletonMinion", "SkeletalKnight"};
+        String[] types = {"SkeletalMinion", "SkeletalKnight"};
         int count = switch (partySize) { case 1 -> 5; case 2 -> 8; case 3 -> 12; default -> 16; };
         for (int i = 0; i < count; i++) {
             Location loc = safeRandomLocation(world, clipboard, pasteAt);
