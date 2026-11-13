@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.5-dev
+version: 1.2.6-dev
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
@@ -14,3 +14,7 @@ commands:
 permissions:
   bastiondungeons.use:
     default: true
+
+  bastiondungeons.bypass:
+    description: Ignora los horarios de apertura de mazmorras
+    default: op

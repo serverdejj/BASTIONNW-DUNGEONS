@@ -50,6 +50,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<String> finishing = new HashSet<>();
     private final Set<String> cleanupQueued = new HashSet<>();
     private final Set<String> announcedMissing = new HashSet<>();
+    private static final long CLOSED_MS = 30L * 60_000L;
+    private static final long OPEN_MS = 5L * 60_000L;
+    private static final long CYCLE_MS = CLOSED_MS + OPEN_MS;
+    private long cycleStart;
+    private long lastAnnouncedWindow = -1L;
+    private final Set<UUID> enteredThisWindow = new HashSet<>();
+    private final File scheduleFile = new File(getDataFolder(), "schedule.yml");
     private static final int TOTAL_MOBS = 10;
     private static final int MAX_ACTIVE = 3;
     private static final int PASTE_Y = 100;
@@ -60,8 +67,74 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Bastion Dungeons 1.2.5-dev listo.");
+        loadSchedule();
+        Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
+        getLogger().info("Bastion Dungeons 1.2.6-dev listo.");
     }
+
+    private void loadSchedule() {
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(scheduleFile);
+        cycleStart = cfg.getLong("cycle-start", System.currentTimeMillis());
+        if (cycleStart <= 0 || cycleStart > System.currentTimeMillis()) cycleStart = System.currentTimeMillis();
+        // Solo conservar participaciones del periodo de apertura actual.
+        long window = currentWindow();
+        if (cfg.getLong("entered-window", -1L) == window)
+            for (String raw : cfg.getStringList("entered-players")) {
+                try { enteredThisWindow.add(UUID.fromString(raw)); } catch (IllegalArgumentException ignored) {}
+            }
+        saveSchedule();
+    }
+
+    private void saveSchedule() {
+        var cfg = new org.bukkit.configuration.file.YamlConfiguration();
+        cfg.set("cycle-start", cycleStart);
+        cfg.set("entered-window", currentWindow());
+        cfg.set("entered-players", enteredThisWindow.stream().map(UUID::toString).toList());
+        try { cfg.save(scheduleFile); }
+        catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando horario de mazmorras", ex); }
+    }
+
+    private long currentWindow() { return Math.max(0L, (System.currentTimeMillis() - cycleStart) / CYCLE_MS); }
+    private long cycleOffset() { return Math.floorMod(System.currentTimeMillis() - cycleStart, CYCLE_MS); }
+    private boolean isOpen() { return cycleOffset() >= CLOSED_MS; }
+    private boolean bypass(Player p) { return p.isOp() || p.hasPermission("bastiondungeons.bypass"); }
+    private String duration(long ms) {
+        long seconds = Math.max(0L, (ms + 999L) / 1000L);
+        return (seconds / 60L) + "m " + (seconds % 60L) + "s";
+    }
+    private boolean canJoin(Player p) {
+        if (bypass(p)) return true;
+        if (!isOpen()) {
+            colored(p, ChatColor.WHITE + "Las mazmorras abrirán en " + ChatColor.RED + duration(CLOSED_MS - cycleOffset()) + ChatColor.WHITE + ".");
+            return false;
+        }
+        if (enteredThisWindow.contains(p.getUniqueId())) {
+            colored(p, ChatColor.WHITE + "Ya participaste en esta apertura. Próxima oportunidad en " + ChatColor.RED + duration(CYCLE_MS - cycleOffset()) + ChatColor.WHITE + ".");
+            return false;
+        }
+        return true;
+    }
+    private void checkSchedule() {
+        long window = currentWindow();
+        if (window != lastAnnouncedWindow) {
+            if (lastAnnouncedWindow >= 0) {
+                enteredThisWindow.clear();
+                saveSchedule();
+                for (Player p : Bukkit.getOnlinePlayers())
+                    colored(p, net.md_5.bungee.api.ChatColor.of("#FFAAAA") + "¡Las mazmorras han cerrado!" + ChatColor.WHITE + " Próxima apertura en 30 minutos.");
+            }
+            lastAnnouncedWindow = window;
+        }
+        // Detectar apertura incluso después de reinicios, sin repetir anuncios cada segundo.
+        if (isOpen() && lastAnnouncedOpen != window) {
+            lastAnnouncedOpen = window;
+            for (Player p : Bukkit.getOnlinePlayers())
+                colored(p, net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡MAZMORRAS ABIERTAS!" + ChatColor.WHITE + " Tienes " + ChatColor.YELLOW + "5 minutos" + ChatColor.WHITE + " para entrar.");
+        }
+    }
+    private long lastAnnouncedOpen = -1L;
+
+    @Override public void onDisable() { saveSchedule(); }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
     private List<Player> members(UUID leader) {
@@ -111,15 +184,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             switch (args[1].toLowerCase(Locale.ROOT)) {
                 case "add" -> {
                     if (args.length < 3) { msg(p,"/dungeon party add <jugador>"); return true; }
+                    if (!canJoin(p)) return true;
                     if (!leader(id).equals(id)) { msg(p,"Solo el lider invita."); return true; }
                     if (members(id).size() >= 4) { msg(p,"Party llena (maximo 4)."); return true; }
                     Player target = Bukkit.getPlayerExact(args[2]);
                     if (target == null || target.equals(p)) { msg(p,"Jugador no disponible."); return true; }
+                    if (!canJoin(target)) { msg(p, "Ese jugador no puede entrar durante esta apertura."); return true; }
                     if (leaderOf.containsKey(target.getUniqueId()) || playingWorld.containsKey(target.getUniqueId()) || preparing.contains(target.getUniqueId())) { msg(p,"Ese jugador ya esta en una party o partida."); return true; }
                     invites.put(target.getUniqueId(), id);
                     msg(target,p.getName()+" te invito. Usa /dungeon party accept"); msg(p,"Invitacion enviada.");
                 }
                 case "accept" -> {
+                    if (!canJoin(p)) return true;
                     UUID owner = invites.remove(id);
                     if (owner == null || Bukkit.getPlayer(owner) == null || playingWorld.containsKey(owner) || preparing.contains(owner) || members(owner).size() >= 4) { msg(p,"No hay invitacion valida."); return true; }
                     if (leaderOf.containsKey(id) || playingWorld.containsKey(id) || preparing.contains(id)) { msg(p,"Ya estas en otra party o partida."); return true; }
@@ -138,13 +214,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         if (args[0].equalsIgnoreCase("leave")) { leave(p); return true; }
         if (args[0].equalsIgnoreCase("go")) {
+            if (!canJoin(p)) return true;
             if (!leader(id).equals(id)) { msg(p,"Solo el lider puede iniciar."); return true; }
             List<Player> team = members(id);
+            if (team.stream().anyMatch(q -> !canJoin(q))) { msg(p, "Algún miembro no tiene acceso a esta apertura."); return true; }
             if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()) || preparing.contains(q.getUniqueId()))) { msg(p,"Alguien ya esta en partida."); return true; }
             File folder = new File(getDataFolder(), "schematics");
             File[] schems = folder.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".schem"));
             if (schems == null || schems.length == 0) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
             File chosen = schems[new Random().nextInt(schems.length)];
+            // Reservar la entrada al iniciar la cuenta atrás para evitar partidas duplicadas.
+            for (Player member : team) if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
+            saveSchedule();
             beginLobbyCountdown(team, chosen);
             return true;
         }
@@ -162,7 +243,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             @Override public void run() {
                 boolean valid = team.stream().allMatch(p -> p.isOnline() && preparing.contains(p.getUniqueId()));
                 if (!valid) {
-                    for (Player p : team) preparing.remove(p.getUniqueId());
+                    for (Player p : team) {
+                        preparing.remove(p.getUniqueId());
+                        if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
+                    }
+                    saveSchedule();
                     for (Player p : team) if (p.isOnline()) msg(p, "Preparación cancelada: alguien salió.");
                     cancel(); return;
                 }
@@ -173,7 +258,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     try { start(team, file); }
                     catch (Exception ex) {
                         getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
-                        for (Player p : team) if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
+                        for (Player p : team) {
+                            if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
+                            if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
+                        }
+                        saveSchedule();
                     } finally { for (Player p : team) preparing.remove(p.getUniqueId()); }
                     cancel(); return;
                 }
@@ -647,8 +736,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             releaseParty(name);
             for (Player p : winners) {
                 frozen.add(p.getUniqueId());
-                p.sendTitle(org.bukkit.ChatColor.GOLD + "¡VICTORIA!",
-                        org.bukkit.ChatColor.GREEN + "¡Han derrotado al Jefe!", 10, 80, 10);
+                p.sendTitle(net.md_5.bungee.api.ChatColor.of("#FFF800") + "" + ChatColor.BOLD + "¡VICTORIA!",
+                        ChatColor.WHITE + "¡Han derrotado a todos los enemigos!", 10, 80, 10);
                 p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
                 msg(p, "¡Victoria! Regresando al lobby en 5 segundos...");
             }
