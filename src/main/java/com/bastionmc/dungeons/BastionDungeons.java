@@ -16,6 +16,23 @@ import org.bukkit.event.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityCombustEvent;
+import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityExplodeEvent;
+import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.BlockPlaceEvent;
+import org.bukkit.event.block.BlockIgniteEvent;
+import org.bukkit.event.block.BlockExplodeEvent;
+import org.bukkit.event.player.PlayerBucketEmptyEvent;
+import org.bukkit.event.player.PlayerBucketFillEvent;
+import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerArmorStandManipulateEvent;
+import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.hanging.HangingBreakEvent;
+import org.bukkit.event.hanging.HangingPlaceEvent;
+import org.bukkit.event.player.PlayerInteractEntityEvent;
+import org.bukkit.event.player.PlayerDropItemEvent;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Entity;
@@ -69,7 +86,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.6-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.7-dev listo.");
     }
 
     private void loadSchedule() {
@@ -105,7 +122,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private boolean canJoin(Player p) {
         if (bypass(p)) return true;
         if (!isOpen()) {
-            colored(p, ChatColor.WHITE + "Las mazmorras abrirán en " + ChatColor.RED + duration(CLOSED_MS - cycleOffset()) + ChatColor.WHITE + ".");
+            colored(p, hex("#FFA5A5") + "¡Whoops!" + ChatColor.WHITE + ", ¡Lo siento pero las mazmorras abrirán en " + ChatColor.RED + duration(CLOSED_MS - cycleOffset()) + "." + ChatColor.WHITE + "!");
             return false;
         }
         if (enteredThisWindow.contains(p.getUniqueId())) {
@@ -121,7 +138,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 enteredThisWindow.clear();
                 saveSchedule();
                 for (Player p : Bukkit.getOnlinePlayers())
-                    colored(p, net.md_5.bungee.api.ChatColor.of("#FFAAAA") + "¡Las mazmorras han cerrado!" + ChatColor.WHITE + " Próxima apertura en 30 minutos.");
+                    colored(p, hex("#FD9696") + "¡Las mazmorras se han cerrado!" + ChatColor.WHITE + ", ¡Próxima apertura en " + hex("#D2A5FF") + "30 minutos" + ChatColor.WHITE + "!.");
             }
             lastAnnouncedWindow = window;
         }
@@ -129,7 +146,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (isOpen() && lastAnnouncedOpen != window) {
             lastAnnouncedOpen = window;
             for (Player p : Bukkit.getOnlinePlayers())
-                colored(p, net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡MAZMORRAS ABIERTAS!" + ChatColor.WHITE + " Tienes " + ChatColor.YELLOW + "5 minutos" + ChatColor.WHITE + " para entrar.");
+                colored(p, hex("#D2A5FF") + "¡Mazmorras abiertas!" + ChatColor.WHITE + ", ¡Tienes " + hex("#D2A5FF") + "5 minutos" + ChatColor.WHITE + " para entrar con /dungeons!");
         }
     }
     private long lastAnnouncedOpen = -1L;
@@ -154,6 +171,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void colored(Player p, String message) { p.sendMessage(prefix() + message); }
+    private net.md_5.bungee.api.ChatColor hex(String value) { return net.md_5.bungee.api.ChatColor.of(value); }
+    private boolean dungeonWorld(World world) { return world != null && instanceWorlds.contains(world.getName()); }
+    private boolean dungeonPlayer(Player player) {
+        return player != null && dungeonWorld(player.getWorld())
+                && player.getWorld().getName().equals(playingWorld.get(player.getUniqueId()));
+    }
+    private void clearLobbyEffects(Player player) {
+        frozen.remove(player.getUniqueId());
+        player.removePotionEffect(PotionEffectType.DARKNESS);
+    }
+    private void beginLobbyEffects(Player player) {
+        frozen.add(player.getUniqueId());
+        player.addPotionEffect(new PotionEffect(PotionEffectType.DARKNESS, 20 * 120, 0, false, false, false));
+    }
 
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
@@ -233,7 +264,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void beginLobbyCountdown(List<Player> team, File file) {
-        for (Player member : team) preparing.add(member.getUniqueId());
+        for (Player member : team) { preparing.add(member.getUniqueId()); beginLobbyEffects(member); }
         for (Player member : team) colored(member,
                 net.md_5.bungee.api.ChatColor.of("#D2A5FF") + "¡Prepárate!" + org.bukkit.ChatColor.WHITE
                 + ", está empezando la mazmorra " + org.bukkit.ChatColor.DARK_GRAY + "("
@@ -245,6 +276,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (!valid) {
                     for (Player p : team) {
                         preparing.remove(p.getUniqueId());
+                        if (p.isOnline()) clearLobbyEffects(p);
                         if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
                     }
                     saveSchedule();
@@ -260,6 +292,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
                         for (Player p : team) {
                             if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
+                            if (p.isOnline()) clearLobbyEffects(p);
                             if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
                         }
                         saveSchedule();
@@ -301,14 +334,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             List<CompletableFuture<Chunk>> loads = new ArrayList<>();
             for (int cx = minCx; cx <= maxCx; cx++) for (int cz = minCz; cz <= maxCz; cz++)
                 loads.add(world.getChunkAtAsync(cx, cz, true));
-            for (Player member : team) msg(member, "Preparando mazmorra (" + chunkCount + " chunks)...");
+            // Preparación silenciosa: los jugadores ven oscuridad y cuenta regresiva.
             CompletableFuture.allOf(loads.toArray(new CompletableFuture[0])).whenComplete((ignored, failure) ->
                 Bukkit.getScheduler().runTask(this, () -> {
                     if (!instanceWorlds.contains(name)) return;
                     if (failure != null) {
                         getLogger().log(java.util.logging.Level.SEVERE, "Error cargando chunks", failure);
                         cleanupFailedWorld(name);
-                        for (Player member : team) if (member.isOnline()) msg(member, "No se pudo preparar la mazmorra.");
+                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "No se pudo preparar la mazmorra."); }
                         return;
                     }
                     try {
@@ -325,8 +358,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             returns.put(member.getUniqueId(), member.getLocation().clone());
                             playingWorld.put(member.getUniqueId(), name);
                             member.teleport(spawn);
+                            clearLobbyEffects(member);
                             frozen.add(member.getUniqueId());
-                            msg(member, "Mazmorra: " + file.getName() + ". Preparados para el combate.");
                         }
                         schematicNames.put(name, file.getName());
                         teamSizes.put(name, team.size());
@@ -336,7 +369,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     } catch (Exception ex) {
                         getLogger().log(java.util.logging.Level.SEVERE, "Error pegando schematic", ex);
                         cleanupFailedWorld(name);
-                        for (Player member : team) if (member.isOnline()) msg(member, "Error creando mazmorra; revisa consola.");
+                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "Error creando mazmorra; revisa consola."); }
                     }
                 }));
         } catch (Exception ex) {
@@ -351,7 +384,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void leave(Player p) {
         UUID id = p.getUniqueId();
-        if (preparing.remove(id)) { msg(p, "Preparación cancelada."); return; }
+        if (preparing.remove(id)) { clearLobbyEffects(p); msg(p, "Preparación cancelada."); return; }
         String name = playingWorld.get(id);
         if (name != null && finishing.contains(name)) { msg(p, "La partida terminó. Regresarás al lobby en unos segundos."); return; }
         if (name == null) { msg(p, "No estás en una mazmorra."); return; }
@@ -363,7 +396,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void returnPlayer(Player p, String name) {
         UUID id = p.getUniqueId();
-        frozen.remove(id);
+        clearLobbyEffects(p);
         playingWorld.remove(id);
         Location back = returns.remove(id);
         if (p.isOnline()) {
@@ -479,6 +512,60 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         living.setFireTicks(0);
         return living;
     }
+
+    // Las instancias son de solo lectura: proteger la estructura y a los compañeros.
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonPvp(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player victim) || !dungeonPlayer(victim)) return;
+        Entity attacker = event.getDamager();
+        
+        if (attacker instanceof org.bukkit.entity.Projectile projectile) {
+            Object shooter = projectile.getShooter();
+            if (shooter instanceof Player player && dungeonPlayer(player)) event.setCancelled(true);
+        } else if (attacker instanceof Player player && dungeonPlayer(player)) {
+            event.setCancelled(true);
+        } else if (attacker instanceof org.bukkit.entity.TNTPrimed tnt
+                && tnt.getSource() instanceof Player player && dungeonPlayer(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonBreak(BlockBreakEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonPlace(BlockPlaceEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonBucketEmpty(PlayerBucketEmptyEvent event) { if (dungeonWorld(event.getPlayer().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonBucketFill(PlayerBucketFillEvent event) { if (dungeonWorld(event.getPlayer().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonIgnite(BlockIgniteEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonEntityExplode(EntityExplodeEvent event) { if (dungeonWorld(event.getLocation().getWorld())) event.blockList().clear(); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonBlockExplode(BlockExplodeEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.blockList().clear(); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonEntityBlock(EntityChangeBlockEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonHangingBreak(HangingBreakEvent event) { if (dungeonWorld(event.getEntity().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonHangingPlace(HangingPlaceEvent event) { if (dungeonWorld(event.getEntity().getWorld())) event.setCancelled(true); }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonInteract(PlayerInteractEvent event) {
+        if (!dungeonWorld(event.getPlayer().getWorld())) return;
+        if (event.getClickedBlock() != null && (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK)) {
+            // Bloquear cambios de estructura; permitir puertas y botones para mapas interactivos.
+            org.bukkit.Material material = event.getClickedBlock().getType();
+            if (material == Material.FARMLAND || material == Material.CAMPFIRE || material == Material.SOUL_CAMPFIRE
+                    || material == Material.RESPAWN_ANCHOR || material == Material.COMPOSTER
+                    || material == Material.CAULDRON || material == Material.WATER_CAULDRON
+                    || material == Material.LAVA_CAULDRON || material == Material.POWDER_SNOW_CAULDRON
+                    || material.name().contains("CANDLE") || material.name().contains("BED")) event.setCancelled(true);
+        }
+        if (event.getAction() == org.bukkit.event.block.Action.PHYSICAL) event.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonArmorStand(PlayerArmorStandManipulateEvent event) { if (dungeonWorld(event.getPlayer().getWorld())) event.setCancelled(true); }
 
     @EventHandler(ignoreCancelled = true)
     public void onCombust(EntityCombustEvent event) {
@@ -711,7 +798,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             var attribute = boss.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
             if (attribute != null) { attribute.setBaseValue(hp); boss.setHealth(hp); }
             bosses.put(name, boss.getUniqueId());
-            for (Player p : world.getPlayers()) msg(p, "¡SkeletonKing ha aparecido!");
+            for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el " + hex("#FD9696") + "Jefe Final" + ChatColor.WHITE + "!.");
         } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
     }
 
@@ -751,6 +838,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
+        clearLobbyEffects(e.getPlayer());
         // Limpiar la sesion al desconectar, para que no quede bloqueado "ya esta en partida".
         String name = playingWorld.get(e.getPlayer().getUniqueId());
         if (name != null && finishing.contains(name)) returnPlayer(e.getPlayer(), name);
