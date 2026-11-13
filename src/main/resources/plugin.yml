@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.3-dev
+version: 1.2.4-dev
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
@@ -9,7 +9,7 @@ softdepend: [MythicMobs]
 commands:
   dungeon:
     description: Comandos de party y mazmorra
-    usage: /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave
+    usage: /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn
     aliases: [dungeons]
 permissions:
   bastiondungeons.use:

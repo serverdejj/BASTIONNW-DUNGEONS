@@ -40,13 +40,23 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<UUID> frozen = new HashSet<>();
     private final Set<UUID> protectedMobs = new HashSet<>();
     private final Map<String, Location> entryPoints = new HashMap<>();
+    private final Map<String, String> schematicNames = new HashMap<>();
+    private final Map<String, Integer> totalSpawned = new HashMap<>();
+    private final Map<String, Integer> defeated = new HashMap<>();
+    private final Map<String, Boolean> bossCountdownStarted = new HashMap<>();
+    private final Map<UUID, Integer> lostTicks = new HashMap<>();
+    private final Map<String, org.bukkit.scheduler.BukkitTask> trackers = new HashMap<>();
+    private static final int TOTAL_MOBS = 10;
+    private static final int MAX_ACTIVE = 3;
+    private static final int PASTE_Y = 100;
+    private final File spawnFile = new File(getDataFolder(), "spawns.yml");
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Bastion Dungeons 1.2.3-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.4-dev listo.");
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -60,7 +70,27 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
         UUID id = p.getUniqueId();
-        if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave"); return true; }
+        if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave | /dungeon setspawn"); return true; }
+        if (args[0].equalsIgnoreCase("setspawn")) {
+            if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
+            String worldName = playingWorld.get(id);
+            if (worldName == null || !worldName.equals(p.getWorld().getName()) || !schematicNames.containsKey(worldName)) {
+                msg(p, "Entra primero a una mazmorra activa."); return true;
+            }
+            Location l = p.getLocation();
+            if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) {
+                msg(p, "Busca suelo firme con dos bloques libres encima."); return true;
+            }
+            String key = schematicNames.get(worldName);
+            org.bukkit.configuration.file.YamlConfiguration cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(spawnFile);
+            String base = "spawns." + key.replace('.', '_');
+            cfg.set(base + ".x", l.getX()); cfg.set(base + ".y", l.getY() - PASTE_Y);
+            cfg.set(base + ".z", l.getZ()); cfg.set(base + ".yaw", (double) l.getYaw());
+            cfg.set(base + ".pitch", (double) l.getPitch());
+            try { cfg.save(spawnFile); msg(p, "Spawn guardado para " + key + ". Se usara en las proximas partidas."); }
+            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "No se pudo guardar spawn", ex); msg(p, "Error guardando spawn."); }
+            return true;
+        }
         if (args[0].equalsIgnoreCase("party")) {
             if (args.length < 2) { msg(p,"Usa add, accept, leave o list."); return true; }
             switch (args[1].toLowerCase(Locale.ROOT)) {
@@ -146,7 +176,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
                                     .to(pasteAt).ignoreAirBlocks(false).build());
                         }
-                        Location spawn = safeRandomLocation(world, clipboard, pasteAt);
+                        Location spawn = configuredSpawn(world, file.getName());
+                        if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
                         if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
                         world.setSpawnLocation(spawn);
                         for (Player member : team) {
@@ -157,6 +188,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             frozen.add(member.getUniqueId());
                             msg(member, "Mazmorra: " + file.getName() + ". Preparados para el combate.");
                         }
+                        schematicNames.put(name, file.getName());
                         teamSizes.put(name, team.size());
                         enemies.put(name, new HashSet<>());
                         entryPoints.put(name, spawn.clone());
@@ -194,6 +226,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             bossAreas.remove(name);
             teamSizes.remove(name);
             entryPoints.remove(name);
+            schematicNames.remove(name); totalSpawned.remove(name); defeated.remove(name);
+            bossCountdownStarted.remove(name);
+            org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
+            if (tracker != null) tracker.cancel();
             // Se conserva el directorio del mundo para evitar borrar archivos automaticamente.
         }
         msg(p,"Saliste de la mazmorra.");
@@ -257,7 +293,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         player.sendTitle(ChatColor.GREEN + "¡A LUCHAR!", ChatColor.YELLOW + "¡Derrota a los enemigos!", 0, 35, 10);
                         player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.65f, 1.5f);
                     }
-                    spawnWave(world, clipboard, pasteAt, partySize);
+                    bossAreas.put(name, new BossArea(clipboard, pasteAt));
+                    totalSpawned.put(name, 0); defeated.put(name, 0);
+                    spawnNextMobs(world);
+                    startTracker(world);
                     cancel(); return;
                 }
                 for (Player player : world.getPlayers()) {
@@ -326,52 +365,151 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return null;
     }
 
-    private void spawnWave(World world, Clipboard clipboard, BlockVector3 pasteAt, int partySize) {
-        String name = world.getName();
-        if (!instanceWorlds.contains(name)) return;
-        String[] types = {"SkeletalMinion", "SkeletalKnight"};
-        int count = switch (partySize) { case 1 -> 5; case 2 -> 8; case 3 -> 12; default -> 16; };
-        for (int i = 0; i < count; i++) {
-            Location center = world.getPlayers().isEmpty() ? entryPoints.get(name) :
-                    world.getPlayers().get(i % world.getPlayers().size()).getLocation();
-            Location loc = nearbySafeLocation(world, center, 5, 12);
-            if (loc == null) { getLogger().warning("Sin espacio seguro a 5-12 bloques en " + name); continue; }
-            try {
-                LivingEntity mob = spawnMythic(types[random.nextInt(types.length)], loc);
-                enemies.get(name).add(mob.getUniqueId());
-            } catch (Exception ex) { getLogger().warning("No se pudo invocar MythicMob: " + ex); break; }
+    private boolean isSafe(World world, int x, int y, int z) {
+        if (world == null || y <= world.getMinHeight() + 1 || y >= world.getMaxHeight() - 2) return false;
+        var floor = world.getBlockAt(x, y - 1, z);
+        var feet = world.getBlockAt(x, y, z);
+        var head = world.getBlockAt(x, y + 1, z);
+        if (!floor.getType().isSolid() || !feet.isPassable() || !head.isPassable()) return false;
+        if (floor.isLiquid() || feet.isLiquid() || head.isLiquid()) return false;
+        String type = floor.getType().name();
+        return !type.contains("LEAVES") && !type.contains("MAGMA") && !type.contains("CACTUS");
+    }
+
+    private Location configuredSpawn(World world, String schematic) {
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(spawnFile);
+        String base = "spawns." + schematic.replace('.', '_');
+        if (!cfg.contains(base + ".x")) return null;
+        Location loc = new Location(world, cfg.getDouble(base + ".x"),
+                cfg.getDouble(base + ".y") + PASTE_Y, cfg.getDouble(base + ".z"),
+                (float) cfg.getDouble(base + ".yaw"), (float) cfg.getDouble(base + ".pitch"));
+        if (!isSafe(world, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            getLogger().warning("Spawn guardado inseguro para " + schematic + "; usando spawn automatico.");
+            return null;
         }
-        if (enemies.get(name).isEmpty()) {
-            for (Player p : world.getPlayers()) msg(p, "No se encontraron enemigos o posiciones seguras. Revisa consola.");
-            return;
-        }
-        for (Player p : world.getPlayers()) msg(p, "Derrota a " + enemies.get(name).size() + " enemigos para invocar al jefe.");
-        // Store schematic bounds for the boss spawn when the last enemy dies.
-        bossAreas.put(name, new BossArea(clipboard, pasteAt));
+        return loc;
     }
 
     private record BossArea(Clipboard clipboard, BlockVector3 pasteAt) {}
     private final Map<String, BossArea> bossAreas = new HashMap<>();
 
+    private List<Player> fighters(World world) {
+        return world.getPlayers().stream().filter(p -> p.getGameMode() != GameMode.SPECTATOR).toList();
+    }
+
+    private void spawnNextMobs(World world) {
+        String name = world.getName();
+        if (!instanceWorlds.contains(name) || bossCountdownStarted.containsKey(name)) return;
+        Set<UUID> active = enemies.get(name);
+        if (active == null) return;
+        List<Player> players = fighters(world);
+        if (players.isEmpty()) return;
+        int attempts = 0;
+        while (active.size() < MAX_ACTIVE && totalSpawned.getOrDefault(name, 0) < TOTAL_MOBS && attempts++ < 25) {
+            Player target = players.get(random.nextInt(players.size()));
+            Location loc = nearbySafeLocation(world, target.getLocation(), 5, 8);
+            if (loc == null) continue;
+            try {
+                String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
+                LivingEntity mob = spawnMythic(mobId, loc);
+                active.add(mob.getUniqueId());
+                totalSpawned.merge(name, 1, Integer::sum);
+            } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error invocando enemigo", ex); break; }
+        }
+        if (totalSpawned.getOrDefault(name, 0) == 0) {
+            getLogger().warning("Sin posiciones seguras para enemigos cerca de jugadores en " + name);
+            for (Player p : players) msg(p, "No se encontraron posiciones seguras para enemigos.");
+        }
+    }
+
+    private void startTracker(World world) {
+        String name = world.getName();
+        trackers.put(name, Bukkit.getScheduler().runTaskTimer(this, () -> {
+            if (!instanceWorlds.contains(name) || bossCountdownStarted.containsKey(name)) return;
+            Set<UUID> active = enemies.get(name);
+            if (active == null) return;
+            List<Player> players = fighters(world);
+            if (players.isEmpty()) return;
+            for (UUID mobId : new ArrayList<>(active)) {
+                Entity entity = Bukkit.getEntity(mobId);
+                if (!(entity instanceof LivingEntity mob) || mob.isDead()) {
+                    // Un enemigo desaparecido no debe bloquear la partida.
+                    active.remove(mobId); protectedMobs.remove(mobId); lostTicks.remove(mobId);
+                    defeated.merge(name, 1, Integer::sum);
+                    continue;
+                }
+                Player closest = players.stream().min(Comparator.comparingDouble(p -> p.getLocation().distanceSquared(mob.getLocation()))).orElse(null);
+                if (closest == null) continue;
+                if (mob.getLocation().distanceSquared(closest.getLocation()) > 20 * 20) {
+                    int ticks = lostTicks.merge(mobId, 1, Integer::sum);
+                    if (ticks >= 2) {
+                        Location loc = nearbySafeLocation(world, closest.getLocation(), 5, 8);
+                        if (loc != null) mob.teleport(loc);
+                        lostTicks.remove(mobId);
+                    }
+                } else lostTicks.remove(mobId);
+            }
+            if (defeated.getOrDefault(name, 0) >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(world);
+            else spawnNextMobs(world);
+        }, 40L, 100L));
+        for (Player p : world.getPlayers()) msg(p, "¡Derrota a 10 enemigos! Apareceran de 3 en 3.");
+    }
+
+    private void startBossCountdown(World world) {
+        String name = world.getName();
+        if (bossCountdownStarted.putIfAbsent(name, true) != null) return;
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int seconds = 10;
+            @Override public void run() {
+                if (!instanceWorlds.contains(name) || fighters(world).isEmpty()) { cancel(); return; }
+                if (seconds == 0) {
+                    for (Player p : world.getPlayers()) {
+                        frozen.remove(p.getUniqueId());
+                        p.sendTitle(ChatColor.DARK_RED + "¡SKELETON KING!", ChatColor.GOLD + "¡DERROTA AL JEFE!", 0, 45, 10);
+                        p.playSound(p.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1f, .7f);
+                    }
+                    spawnBoss(world); cancel(); return;
+                }
+                for (Player p : world.getPlayers()) {
+                    p.sendTitle(ChatColor.RED + "" + seconds, ChatColor.GOLD + "¡EL JEFE SE ACERCA!", 0, 23, 0);
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, seconds <= 3 ? 1.8f : 1f);
+                }
+                seconds--;
+            }
+        }.runTaskTimer(this, 0L, 20L);
+    }
+
+    private void spawnBoss(World world) {
+        String name = world.getName();
+        List<Player> players = fighters(world);
+        if (players.isEmpty()) return;
+        Location loc = nearbySafeLocation(world, players.get(0).getLocation(), 5, 8);
+        if (loc == null) {
+            getLogger().warning("No hay lugar para SkeletonKing en " + name);
+            for (Player p : players) msg(p, "No hay lugar para el jefe. Revisa consola.");
+            return;
+        }
+        try {
+            LivingEntity boss = spawnMythic("SkeletonKing", loc);
+            double hp = switch (teamSizes.getOrDefault(name, 1)) { case 1 -> 100; case 2 -> 150; case 3 -> 200; default -> 250; };
+            var attribute = boss.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+            if (attribute != null) { attribute.setBaseValue(hp); boss.setHealth(hp); }
+            bosses.put(name, boss.getUniqueId());
+            for (Player p : world.getPlayers()) msg(p, "¡SkeletonKing ha aparecido!");
+        } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
+    }
+
     @EventHandler public void onMobDeath(EntityDeathEvent event) {
         String name = event.getEntity().getWorld().getName();
-        Set<UUID> remaining = enemies.get(name);
-        if (remaining == null) return;
         UUID dead = event.getEntity().getUniqueId();
-        protectedMobs.remove(dead);
-        if (remaining.remove(dead) && remaining.isEmpty() && !bosses.containsKey(name)) {
-            BossArea area = bossAreas.get(name);
-            Location loc = nearbySafeLocation(event.getEntity().getWorld(),
-                    entryPoints.get(name), 5, 12);
-            if (loc == null) { getLogger().warning("No hay lugar para SkeletonKing en " + name); return; }
-            try {
-                LivingEntity boss = spawnMythic("SkeletonKing", loc);
-                double hp = switch (teamSizes.getOrDefault(name, 1)) { case 1 -> 100; case 2 -> 150; case 3 -> 200; default -> 250; };
-                var attribute = boss.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
-                if (attribute != null) { attribute.setBaseValue(hp); boss.setHealth(hp); }
-                bosses.put(name, boss.getUniqueId());
-                for (Player p : boss.getWorld().getPlayers()) msg(p, "¡SkeletonKing ha aparecido!");
-            } catch (Exception ex) { getLogger().warning("Error al crear SkeletonKing: " + ex); }
+        protectedMobs.remove(dead); lostTicks.remove(dead);
+        Set<UUID> active = enemies.get(name);
+        if (active == null) return;
+        if (active.remove(dead)) {
+            int kills = defeated.merge(name, 1, Integer::sum);
+            for (Player p : event.getEntity().getWorld().getPlayers()) msg(p, "Enemigos derrotados: " + kills + "/" + TOTAL_MOBS);
+            if (kills >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(event.getEntity().getWorld());
+            else spawnNextMobs(event.getEntity().getWorld());
         } else if (dead.equals(bosses.get(name))) {
             bosses.remove(name);
             for (Player p : new ArrayList<>(event.getEntity().getWorld().getPlayers())) {
