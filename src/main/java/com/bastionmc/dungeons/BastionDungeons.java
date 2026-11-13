@@ -46,6 +46,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, Boolean> bossCountdownStarted = new HashMap<>();
     private final Map<UUID, Integer> lostTicks = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> trackers = new HashMap<>();
+    private final Set<UUID> preparing = new HashSet<>();
+    private final Set<String> finishing = new HashSet<>();
+    private final Set<String> cleanupQueued = new HashSet<>();
+    private final Set<String> announcedMissing = new HashSet<>();
     private static final int TOTAL_MOBS = 10;
     private static final int MAX_ACTIVE = 3;
     private static final int PASTE_Y = 100;
@@ -56,7 +60,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Bastion Dungeons 1.2.4-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.5-dev listo.");
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -66,6 +70,17 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return result;
     }
     private void msg(Player p, String text) { p.sendMessage(ChatColor.GOLD + "[BASTION] " + ChatColor.WHITE + text); }
+
+    private String prefix() {
+        String[] colors = {"#9400FF", "#9711FF", "#9B22FF", "#9E32FF", "#A143FF", "#9E32FF", "#9B22FF", "#9711FF", "#9400FF"};
+        String name = "MAZMORRAS";
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < name.length(); i++)
+            out.append(net.md_5.bungee.api.ChatColor.of(colors[i])).append(net.md_5.bungee.api.ChatColor.BOLD).append(name.charAt(i));
+        return out.append(org.bukkit.ChatColor.DARK_GRAY).append(" » ").toString();
+    }
+
+    private void colored(Player p, String message) { p.sendMessage(prefix() + message); }
 
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
@@ -100,19 +115,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     if (members(id).size() >= 4) { msg(p,"Party llena (maximo 4)."); return true; }
                     Player target = Bukkit.getPlayerExact(args[2]);
                     if (target == null || target.equals(p)) { msg(p,"Jugador no disponible."); return true; }
-                    if (leaderOf.containsKey(target.getUniqueId()) || playingWorld.containsKey(target.getUniqueId())) { msg(p,"Ese jugador ya esta en una party o partida."); return true; }
+                    if (leaderOf.containsKey(target.getUniqueId()) || playingWorld.containsKey(target.getUniqueId()) || preparing.contains(target.getUniqueId())) { msg(p,"Ese jugador ya esta en una party o partida."); return true; }
                     invites.put(target.getUniqueId(), id);
                     msg(target,p.getName()+" te invito. Usa /dungeon party accept"); msg(p,"Invitacion enviada.");
                 }
                 case "accept" -> {
                     UUID owner = invites.remove(id);
-                    if (owner == null || Bukkit.getPlayer(owner) == null || playingWorld.containsKey(owner) || members(owner).size() >= 4) { msg(p,"No hay invitacion valida."); return true; }
-                    if (leaderOf.containsKey(id) || playingWorld.containsKey(id)) { msg(p,"Ya estas en otra party o partida."); return true; }
+                    if (owner == null || Bukkit.getPlayer(owner) == null || playingWorld.containsKey(owner) || preparing.contains(owner) || members(owner).size() >= 4) { msg(p,"No hay invitacion valida."); return true; }
+                    if (leaderOf.containsKey(id) || playingWorld.containsKey(id) || preparing.contains(id)) { msg(p,"Ya estas en otra party o partida."); return true; }
                     leaderOf.put(id, owner); msg(p,"Te uniste a la party.");
                     Player lead = Bukkit.getPlayer(owner); if (lead != null) msg(lead,p.getName()+" se unio.");
                 }
                 case "leave" -> {
-                    if (playingWorld.containsKey(id)) { msg(p,"En partida usa /dungeon leave."); return true; }
+                    if (playingWorld.containsKey(id) || preparing.contains(id)) { msg(p,"En partida o preparacion usa /dungeon leave."); return true; }
                     if (leader(id).equals(id)) { leaderOf.entrySet().removeIf(e -> e.getValue().equals(id)); msg(p,"Party disuelta."); }
                     else { leaderOf.remove(id); msg(p,"Saliste de la party."); }
                 }
@@ -125,15 +140,51 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (args[0].equalsIgnoreCase("go")) {
             if (!leader(id).equals(id)) { msg(p,"Solo el lider puede iniciar."); return true; }
             List<Player> team = members(id);
-            if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()))) { msg(p,"Alguien ya esta en partida."); return true; }
+            if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()) || preparing.contains(q.getUniqueId()))) { msg(p,"Alguien ya esta en partida."); return true; }
             File folder = new File(getDataFolder(), "schematics");
             File[] schems = folder.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".schem"));
             if (schems == null || schems.length == 0) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
             File chosen = schems[new Random().nextInt(schems.length)];
-            try { start(team, chosen); } catch (Exception ex) { getLogger().log(java.util.logging.Level.SEVERE,"Error creando dungeon",ex); msg(p,"No se pudo iniciar. Revisa consola."); }
+            beginLobbyCountdown(team, chosen);
             return true;
         }
         msg(p,"Comando desconocido."); return true;
+    }
+
+    private void beginLobbyCountdown(List<Player> team, File file) {
+        for (Player member : team) preparing.add(member.getUniqueId());
+        for (Player member : team) colored(member,
+                net.md_5.bungee.api.ChatColor.of("#D2A5FF") + "¡Prepárate!" + org.bukkit.ChatColor.WHITE
+                + ", está empezando la mazmorra " + org.bukkit.ChatColor.DARK_GRAY + "("
+                + org.bukkit.ChatColor.RED + "5 Seg" + org.bukkit.ChatColor.DARK_GRAY + ")");
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int remaining = 5;
+            @Override public void run() {
+                boolean valid = team.stream().allMatch(p -> p.isOnline() && preparing.contains(p.getUniqueId()));
+                if (!valid) {
+                    for (Player p : team) preparing.remove(p.getUniqueId());
+                    for (Player p : team) if (p.isOnline()) msg(p, "Preparación cancelada: alguien salió.");
+                    cancel(); return;
+                }
+                if (remaining == 0) {
+                    for (Player member : team) colored(member,
+                            net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡Todo Listo!" + org.bukkit.ChatColor.WHITE
+                            + ", Enviándote a la mazmorra");
+                    try { start(team, file); }
+                    catch (Exception ex) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
+                        for (Player p : team) if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
+                    } finally { for (Player p : team) preparing.remove(p.getUniqueId()); }
+                    cancel(); return;
+                }
+                for (Player p : team) {
+                    p.sendTitle(org.bukkit.ChatColor.LIGHT_PURPLE + "" + remaining,
+                            org.bukkit.ChatColor.GRAY + "¡Entrando a la mazmorra!", 0, 23, 0);
+                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.1f);
+                }
+                remaining--;
+            }
+        }.runTaskTimer(this, 0L, 20L);
     }
 
     private void start(List<Player> team, File file) throws Exception {
@@ -206,39 +257,114 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void cleanupFailedWorld(String name) {
-        instanceWorlds.remove(name);
-        World world = Bukkit.getWorld(name);
-        if (world != null && world.getPlayers().isEmpty()) Bukkit.unloadWorld(world, false);
+        queueWorldCleanup(name);
     }
 
     private void leave(Player p) {
-        UUID id = p.getUniqueId(); frozen.remove(id); String name = playingWorld.remove(id);
-        if (name == null) { msg(p,"No estas en una mazmorra."); return; }
-        Location back = returns.remove(id);
-        p.setGameMode(GameMode.SURVIVAL);
-        if (back != null) p.teleport(back);
-        if (!playingWorld.containsValue(name)) {
-            World world = Bukkit.getWorld(name);
-            if (world != null) Bukkit.unloadWorld(world, false);
-            instanceWorlds.remove(name);
-            enemies.remove(name);
-            bosses.remove(name);
-            bossAreas.remove(name);
-            teamSizes.remove(name);
-            entryPoints.remove(name);
-            schematicNames.remove(name); totalSpawned.remove(name); defeated.remove(name);
-            bossCountdownStarted.remove(name);
-            org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
-            if (tracker != null) tracker.cancel();
-            // Se conserva el directorio del mundo para evitar borrar archivos automaticamente.
-        }
-        msg(p,"Saliste de la mazmorra.");
+        UUID id = p.getUniqueId();
+        if (preparing.remove(id)) { msg(p, "Preparación cancelada."); return; }
+        String name = playingWorld.get(id);
+        if (name != null && finishing.contains(name)) { msg(p, "La partida terminó. Regresarás al lobby en unos segundos."); return; }
+        if (name == null) { msg(p, "No estás en una mazmorra."); return; }
+        if (playingWorld.values().stream().filter(name::equals).count() == 1) releaseParty(name);
+        returnPlayer(p, name);
+        if (!playingWorld.containsValue(name)) finishInstance(name);
+        msg(p, "Saliste de la mazmorra.");
     }
+
+    private void returnPlayer(Player p, String name) {
+        UUID id = p.getUniqueId();
+        frozen.remove(id);
+        playingWorld.remove(id);
+        Location back = returns.remove(id);
+        if (p.isOnline()) {
+            p.setGameMode(GameMode.SURVIVAL);
+            if (back != null) p.teleport(back);
+        }
+    }
+
+    private void releaseParty(String name) {
+        // Eliminar la party completa de los participantes, incluidos sus líderes.
+        Set<UUID> participants = new HashSet<>();
+        for (var entry : playingWorld.entrySet()) if (name.equals(entry.getValue())) participants.add(entry.getKey());
+        Set<UUID> owners = new HashSet<>();
+        for (UUID id : participants) owners.add(leader(id));
+        for (UUID owner : owners) {
+            leaderOf.entrySet().removeIf(e -> e.getKey().equals(owner) || e.getValue().equals(owner));
+            invites.entrySet().removeIf(e -> e.getValue().equals(owner));
+        }
+        for (UUID id : participants) invites.remove(id);
+    }
+
+    private void finishInstance(String name) {
+        if (!instanceWorlds.contains(name)) return;
+        org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
+        if (tracker != null) tracker.cancel();
+        for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); }
+        UUID boss = bosses.remove(name);
+        if (boss != null) protectedMobs.remove(boss);
+        enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
+        entryPoints.remove(name); schematicNames.remove(name);
+        totalSpawned.remove(name); defeated.remove(name); bossCountdownStarted.remove(name);
+        finishing.remove(name); announcedMissing.remove(name);
+        instanceWorlds.remove(name);
+        queueWorldCleanup(name);
+    }
+
+    private void queueWorldCleanup(String name) {
+        if (!cleanupQueued.add(name)) return;
+        // Esperar a que todos salgan y el mundo se descargue antes de borrar archivos.
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int attempts = 0;
+            @Override public void run() {
+                World world = Bukkit.getWorld(name);
+                if (world != null && !world.getPlayers().isEmpty()) {
+                    if (++attempts >= 20) { getLogger().warning("No se pudo limpiar " + name + ": jugadores presentes"); cleanupQueued.remove(name); cancel(); }
+                    return;
+                }
+                if (world != null && !Bukkit.unloadWorld(world, false)) {
+                    if (++attempts >= 20) { getLogger().warning("No se pudo descargar " + name); cleanupQueued.remove(name); cancel(); }
+                    return;
+                }
+                try {
+                    File folder = new File(Bukkit.getWorldContainer(), name);
+                    if (folder.isDirectory()) deleteTree(folder.toPath());
+                } catch (IOException ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo borrar mundo " + name, ex); }
+                cleanupQueued.remove(name); cancel();
+            }
+        }.runTaskTimer(this, 40L, 20L);
+    }
+
+    private void deleteTree(java.nio.file.Path root) throws IOException {
+        // Solo se llama para mundos temporales bd_... creados por este plugin.
+        if (!root.getFileName().toString().matches("bd_[0-9a-f]{8}")) throw new IOException("Nombre de mundo no permitido");
+        try (var paths = java.nio.file.Files.walk(root)) {
+            for (java.nio.file.Path path : paths.sorted(Comparator.reverseOrder()).toList())
+                java.nio.file.Files.deleteIfExists(path);
+        }
+    }
+
     @EventHandler public void onDeath(PlayerDeathEvent e) {
         if (playingWorld.containsKey(e.getEntity().getUniqueId())) {
             e.setKeepInventory(false);
             e.setKeepLevel(false);
-            // Los drops quedan en el mundo. El modo espectador requiere el evento respawn.
+            // Los objetos caen al suelo para que los compañeros puedan recuperarlos.
+            String worldName = playingWorld.get(e.getEntity().getUniqueId());
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                World world = Bukkit.getWorld(worldName);
+                if (world == null || finishing.contains(worldName) || !instanceWorlds.contains(worldName)) return;
+                if (!world.getPlayers().isEmpty() && fighters(world).isEmpty()) {
+                    finishing.add(worldName);
+                    List<Player> losers = new ArrayList<>(world.getPlayers());
+                    releaseParty(worldName);
+                    for (Player player : losers) msg(player, "¡DERROTA! Regresando al lobby en 5 segundos...");
+                    Bukkit.getScheduler().runTaskLater(this, () -> {
+                        for (Player player : losers)
+                            if (worldName.equals(playingWorld.get(player.getUniqueId()))) returnPlayer(player, worldName);
+                        finishInstance(worldName);
+                    }, 100L);
+                }
+            }, 40L);
         }
     }
     @EventHandler public void onRespawn(org.bukkit.event.player.PlayerRespawnEvent e) {
@@ -284,7 +410,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private void startCountdown(World world, Clipboard clipboard, BlockVector3 pasteAt, int partySize) {
         String name = world.getName();
         new org.bukkit.scheduler.BukkitRunnable() {
-            int remaining = 10;
+            int remaining = 5;
             @Override public void run() {
                 if (!instanceWorlds.contains(name) || world.getPlayers().isEmpty()) { cancel(); return; }
                 if (remaining == 0) {
@@ -416,10 +542,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 totalSpawned.merge(name, 1, Integer::sum);
             } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error invocando enemigo", ex); break; }
         }
-        if (totalSpawned.getOrDefault(name, 0) == 0) {
+        if (active.isEmpty() && totalSpawned.getOrDefault(name, 0) < TOTAL_MOBS && announcedMissing.add(name)) {
             getLogger().warning("Sin posiciones seguras para enemigos cerca de jugadores en " + name);
             for (Player p : players) msg(p, "No se encontraron posiciones seguras para enemigos.");
         }
+        if (!active.isEmpty()) announcedMissing.remove(name);
     }
 
     private void startTracker(World world) {
@@ -459,7 +586,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = world.getName();
         if (bossCountdownStarted.putIfAbsent(name, true) != null) return;
         new org.bukkit.scheduler.BukkitRunnable() {
-            int seconds = 10;
+            int seconds = 5;
             @Override public void run() {
                 if (!instanceWorlds.contains(name) || fighters(world).isEmpty()) { cancel(); return; }
                 if (seconds == 0) {
@@ -507,20 +634,37 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (active == null) return;
         if (active.remove(dead)) {
             int kills = defeated.merge(name, 1, Integer::sum);
-            for (Player p : event.getEntity().getWorld().getPlayers()) msg(p, "Enemigos derrotados: " + kills + "/" + TOTAL_MOBS);
+            for (Player p : event.getEntity().getWorld().getPlayers())
+                p.sendMessage(net.md_5.bungee.api.ChatColor.of("#FFA5A5") + "¡Uno menos!" + org.bukkit.ChatColor.WHITE
+                        + ", ¡Quedan " + Math.max(0, TOTAL_MOBS - kills) + "/" + TOTAL_MOBS + " enemigos!.");
             if (kills >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(event.getEntity().getWorld());
             else spawnNextMobs(event.getEntity().getWorld());
         } else if (dead.equals(bosses.get(name))) {
             bosses.remove(name);
-            for (Player p : new ArrayList<>(event.getEntity().getWorld().getPlayers())) {
-                msg(p, "¡Victoria! Has derrotado a SkeletonKing.");
-                leave(p);
+            if (!finishing.add(name)) return;
+            World world = event.getEntity().getWorld();
+            List<Player> winners = new ArrayList<>(world.getPlayers());
+            releaseParty(name);
+            for (Player p : winners) {
+                frozen.add(p.getUniqueId());
+                p.sendTitle(org.bukkit.ChatColor.GOLD + "¡VICTORIA!",
+                        org.bukkit.ChatColor.GREEN + "¡Han derrotado al Jefe!", 10, 80, 10);
+                p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
+                msg(p, "¡Victoria! Regresando al lobby en 5 segundos...");
             }
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                for (Player p : winners) {
+                    if (name.equals(playingWorld.get(p.getUniqueId()))) returnPlayer(p, name);
+                }
+                finishInstance(name);
+            }, 100L);
         }
     }
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
         // Limpiar la sesion al desconectar, para que no quede bloqueado "ya esta en partida".
-        if (playingWorld.containsKey(e.getPlayer().getUniqueId())) leave(e.getPlayer());
+        String name = playingWorld.get(e.getPlayer().getUniqueId());
+        if (name != null && finishing.contains(name)) returnPlayer(e.getPlayer(), name);
+        else if (name != null || preparing.contains(e.getPlayer().getUniqueId())) leave(e.getPlayer());
     }
 }
