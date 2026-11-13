@@ -15,6 +15,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.EntityCombustEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
@@ -35,13 +37,16 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, UUID> bosses = new HashMap<>();
     private final Map<String, Integer> teamSizes = new HashMap<>();
     private final Random random = new Random();
+    private final Set<UUID> frozen = new HashSet<>();
+    private final Set<UUID> protectedMobs = new HashSet<>();
+    private final Map<String, Location> entryPoints = new HashMap<>();
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Bastion Dungeons 1.2.2-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.3-dev listo.");
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -149,11 +154,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             returns.put(member.getUniqueId(), member.getLocation().clone());
                             playingWorld.put(member.getUniqueId(), name);
                             member.teleport(spawn);
-                            msg(member, "Mazmorra: " + file.getName() + ". El combate comenzara pronto.");
+                            frozen.add(member.getUniqueId());
+                            msg(member, "Mazmorra: " + file.getName() + ". Preparados para el combate.");
                         }
                         teamSizes.put(name, team.size());
                         enemies.put(name, new HashSet<>());
-                        Bukkit.getScheduler().runTaskLater(this, () -> spawnWave(world, clipboard, pasteAt, team.size()), 60L);
+                        entryPoints.put(name, spawn.clone());
+                        startCountdown(world, clipboard, pasteAt, team.size());
                     } catch (Exception ex) {
                         getLogger().log(java.util.logging.Level.SEVERE, "Error pegando schematic", ex);
                         cleanupFailedWorld(name);
@@ -173,7 +180,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void leave(Player p) {
-        UUID id = p.getUniqueId(); String name = playingWorld.remove(id);
+        UUID id = p.getUniqueId(); frozen.remove(id); String name = playingWorld.remove(id);
         if (name == null) { msg(p,"No estas en una mazmorra."); return; }
         Location back = returns.remove(id);
         p.setGameMode(GameMode.SURVIVAL);
@@ -186,6 +193,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             bosses.remove(name);
             bossAreas.remove(name);
             teamSizes.remove(name);
+            entryPoints.remove(name);
             // Se conserva el directorio del mundo para evitar borrar archivos automaticamente.
         }
         msg(p,"Saliste de la mazmorra.");
@@ -216,7 +224,74 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Object abstractEntity = active.getClass().getMethod("getEntity").invoke(active);
         Entity entity = (Entity) abstractEntity.getClass().getMethod("getBukkitEntity").invoke(abstractEntity);
         if (!(entity instanceof LivingEntity living)) throw new IllegalStateException("No es LivingEntity: " + mobId);
+        protectedMobs.add(living.getUniqueId());
+        living.setFireTicks(0);
         return living;
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onCombust(EntityCombustEvent event) {
+        if (protectedMobs.contains(event.getEntity().getUniqueId())) event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onMove(PlayerMoveEvent event) {
+        if (!frozen.contains(event.getPlayer().getUniqueId()) || event.getTo() == null) return;
+        Location from = event.getFrom(), to = event.getTo();
+        if (from.getX() != to.getX() || from.getY() != to.getY() || from.getZ() != to.getZ()) {
+            Location locked = from.clone();
+            locked.setYaw(to.getYaw()); locked.setPitch(to.getPitch());
+            event.setTo(locked);
+        }
+    }
+
+    private void startCountdown(World world, Clipboard clipboard, BlockVector3 pasteAt, int partySize) {
+        String name = world.getName();
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int remaining = 10;
+            @Override public void run() {
+                if (!instanceWorlds.contains(name) || world.getPlayers().isEmpty()) { cancel(); return; }
+                if (remaining == 0) {
+                    for (Player player : world.getPlayers()) {
+                        frozen.remove(player.getUniqueId());
+                        player.sendTitle(ChatColor.GREEN + "¡A LUCHAR!", ChatColor.YELLOW + "¡Derrota a los enemigos!", 0, 35, 10);
+                        player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.65f, 1.5f);
+                    }
+                    spawnWave(world, clipboard, pasteAt, partySize);
+                    cancel(); return;
+                }
+                for (Player player : world.getPlayers()) {
+                    player.sendTitle(ChatColor.GOLD + "" + remaining, ChatColor.YELLOW + "¡PREPÁRATE!", 0, 23, 0);
+                    player.playSound(player.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, remaining <= 3 ? 1.7f : 1.1f);
+                }
+                remaining--;
+            }
+        }.runTaskTimer(this, 0L, 20L);
+    }
+
+    private Location nearbySafeLocation(World world, Location center, int minRadius, int maxRadius) {
+        if (center == null) return null;
+        for (int i = 0; i < 120; i++) {
+            double angle = random.nextDouble() * Math.PI * 2;
+            int radius = minRadius + random.nextInt(maxRadius - minRadius + 1);
+            int x = center.getBlockX() + (int) Math.round(Math.cos(angle) * radius);
+            int z = center.getBlockZ() + (int) Math.round(Math.sin(angle) * radius);
+            for (int dy = 3; dy >= -6; dy--) {
+                int y = center.getBlockY() + dy;
+                if (y <= world.getMinHeight() + 1 || y >= world.getMaxHeight() - 2) continue;
+                var floor = world.getBlockAt(x, y - 1, z);
+                var feet = world.getBlockAt(x, y, z);
+                var head = world.getBlockAt(x, y + 1, z);
+                if (!floor.getType().isSolid() || !feet.isPassable() || !head.isPassable()) continue;
+                if (floor.isLiquid() || feet.isLiquid() || head.isLiquid()) continue;
+                String type = floor.getType().name();
+                if (type.contains("LEAVES") || type.contains("MAGMA") || type.contains("CACTUS")) continue;
+                Location loc = new Location(world, x + .5, y, z + .5);
+                if (world.getNearbyEntities(loc, 2, 2, 2).stream().anyMatch(e -> e instanceof Player)) continue;
+                return loc;
+            }
+        }
+        return null;
     }
 
     private Location safeRandomLocation(World world, Clipboard clipboard, BlockVector3 pasteAt) {
@@ -257,8 +332,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String[] types = {"SkeletalMinion", "SkeletalKnight"};
         int count = switch (partySize) { case 1 -> 5; case 2 -> 8; case 3 -> 12; default -> 16; };
         for (int i = 0; i < count; i++) {
-            Location loc = safeRandomLocation(world, clipboard, pasteAt);
-            if (loc == null) { getLogger().warning("Sin espacio seguro para mob en " + name); continue; }
+            Location center = world.getPlayers().isEmpty() ? entryPoints.get(name) :
+                    world.getPlayers().get(i % world.getPlayers().size()).getLocation();
+            Location loc = nearbySafeLocation(world, center, 5, 12);
+            if (loc == null) { getLogger().warning("Sin espacio seguro a 5-12 bloques en " + name); continue; }
             try {
                 LivingEntity mob = spawnMythic(types[random.nextInt(types.length)], loc);
                 enemies.get(name).add(mob.getUniqueId());
@@ -281,9 +358,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Set<UUID> remaining = enemies.get(name);
         if (remaining == null) return;
         UUID dead = event.getEntity().getUniqueId();
+        protectedMobs.remove(dead);
         if (remaining.remove(dead) && remaining.isEmpty() && !bosses.containsKey(name)) {
             BossArea area = bossAreas.get(name);
-            Location loc = area == null ? null : safeRandomLocation(event.getEntity().getWorld(), area.clipboard(), area.pasteAt());
+            Location loc = nearbySafeLocation(event.getEntity().getWorld(),
+                    entryPoints.get(name), 5, 12);
             if (loc == null) { getLogger().warning("No hay lugar para SkeletonKing en " + name); return; }
             try {
                 LivingEntity boss = spawnMythic("SkeletonKing", loc);
