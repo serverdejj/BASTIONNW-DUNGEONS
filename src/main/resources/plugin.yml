@@ -1,0 +1,16 @@
+name: BastionDungeons
+version: 1.1.0-dev
+main: com.bastionmc.dungeons.BastionDungeons
+api-version: '1.21.11'
+author: BASTION MC
+description: Partidas privadas y mazmorras schematic (prototipo)
+depend: [WorldEdit]
+softdepend: [MythicMobs]
+commands:
+  dungeon:
+    description: Comandos de party y mazmorra
+    usage: /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave
+    aliases: [dungeons]
+permissions:
+  bastiondungeons.use:
+    default: true
