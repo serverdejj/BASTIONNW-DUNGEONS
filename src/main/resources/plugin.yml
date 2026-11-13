@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.1.0-dev
+version: 1.2.0-dev
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
