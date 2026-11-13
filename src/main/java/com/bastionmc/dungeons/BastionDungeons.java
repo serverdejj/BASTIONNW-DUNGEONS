@@ -527,8 +527,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             case "SkeletalMinion" -> hex("#D2A5FF") + "" + ChatColor.BOLD + "☠ ESQUELETO MALDITO ☠";
             case "SkeletalKnight" -> hex("#FFAA55") + "" + ChatColor.BOLD + "⚔ GUARDIÁN ESQUELÉTICO ⚔";
             case "SkeletonKing" -> hex("#FF3333") + "" + ChatColor.BOLD + "♛ REY ESQUELETO ♛";
-            default -> return;
+            default -> "";
         };
+        if (name.isEmpty()) return;
         var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
         double max = maxHealth == null ? mob.getHealth() : maxHealth.getValue();
         long hp = Math.max(0L, (long) Math.ceil(mob.getHealth()));
