@@ -23,6 +23,7 @@ import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.java.JavaPlugin;
 import java.io.*;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 public final class BastionDungeons extends JavaPlugin implements Listener, CommandExecutor {
     private final Map<UUID, UUID> leaderOf = new HashMap<>();
@@ -40,7 +41,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
-        getLogger().info("Bastion Dungeons 1.2.0-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.2-dev listo.");
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -101,6 +102,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void start(List<Player> team, File file) throws Exception {
+        if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs"))
+            throw new IllegalStateException("MythicMobs no esta habilitado");
         String name = "bd_" + UUID.randomUUID().toString().substring(0, 8);
         World world = new WorldCreator(name).environment(World.Environment.NORMAL)
                 .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
@@ -112,27 +115,61 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             Clipboard clipboard;
             try (ClipboardReader reader = format.getReader(new FileInputStream(file))) { clipboard = reader.read(); }
             BlockVector3 pasteAt = BlockVector3.at(0, 100, 0);
-            try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
-                Operations.complete(new ClipboardHolder(clipboard).createPaste(edit).to(pasteAt).ignoreAirBlocks(false).build());
-            }
-            // El origen del schematic debe colocarse cerca de una zona segura de inicio.
-            Location spawn = new Location(world, 0.5, 102, 0.5);
-            world.setSpawnLocation(spawn);
-            for (Player member : team) {
-                returns.put(member.getUniqueId(), member.getLocation().clone());
-                playingWorld.put(member.getUniqueId(), name);
-                member.teleport(spawn);
-                msg(member,"Mazmorra: " + file.getName() + ". El combate comenzara pronto.");
-            }
-            teamSizes.put(name, team.size());
-            enemies.put(name, new HashSet<>());
-            // Delay so all chunks and the schematic are available before spawning.
-            Bukkit.getScheduler().runTaskLater(this, () -> spawnWave(world, clipboard, pasteAt, team.size()), 60L);
+            BlockVector3 min = clipboard.getMinimumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+            BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+            int minCx = min.x() >> 4, maxCx = max.x() >> 4;
+            int minCz = min.z() >> 4, maxCz = max.z() >> 4;
+            long chunkCount = (long) (maxCx - minCx + 1) * (maxCz - minCz + 1);
+            if (chunkCount > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunkCount + " chunks (limite 256)");
+            // Cargar chunks de manera asincrona antes de ejecutar el pegado.
+            // La API de WorldEdit se ejecuta en el hilo del servidor; no se hacen llamadas Bukkit asincronas.
+            List<CompletableFuture<Chunk>> loads = new ArrayList<>();
+            for (int cx = minCx; cx <= maxCx; cx++) for (int cz = minCz; cz <= maxCz; cz++)
+                loads.add(world.getChunkAtAsync(cx, cz, true));
+            for (Player member : team) msg(member, "Preparando mazmorra (" + chunkCount + " chunks)...");
+            CompletableFuture.allOf(loads.toArray(new CompletableFuture[0])).whenComplete((ignored, failure) ->
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (!instanceWorlds.contains(name)) return;
+                    if (failure != null) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error cargando chunks", failure);
+                        cleanupFailedWorld(name);
+                        for (Player member : team) if (member.isOnline()) msg(member, "No se pudo preparar la mazmorra.");
+                        return;
+                    }
+                    try {
+                        try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
+                            Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
+                                    .to(pasteAt).ignoreAirBlocks(false).build());
+                        }
+                        Location spawn = safeRandomLocation(world, clipboard, pasteAt);
+                        if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
+                        world.setSpawnLocation(spawn);
+                        for (Player member : team) {
+                            if (!member.isOnline()) continue;
+                            returns.put(member.getUniqueId(), member.getLocation().clone());
+                            playingWorld.put(member.getUniqueId(), name);
+                            member.teleport(spawn);
+                            msg(member, "Mazmorra: " + file.getName() + ". El combate comenzara pronto.");
+                        }
+                        teamSizes.put(name, team.size());
+                        enemies.put(name, new HashSet<>());
+                        Bukkit.getScheduler().runTaskLater(this, () -> spawnWave(world, clipboard, pasteAt, team.size()), 60L);
+                    } catch (Exception ex) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error pegando schematic", ex);
+                        cleanupFailedWorld(name);
+                        for (Player member : team) if (member.isOnline()) msg(member, "Error creando mazmorra; revisa consola.");
+                    }
+                }));
         } catch (Exception ex) {
-            instanceWorlds.remove(name);
-            Bukkit.unloadWorld(world, false);
+            cleanupFailedWorld(name);
             throw ex;
         }
+    }
+
+    private void cleanupFailedWorld(String name) {
+        instanceWorlds.remove(name);
+        World world = Bukkit.getWorld(name);
+        if (world != null && world.getPlayers().isEmpty()) Bukkit.unloadWorld(world, false);
     }
 
     private void leave(Player p) {
@@ -147,6 +184,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             instanceWorlds.remove(name);
             enemies.remove(name);
             bosses.remove(name);
+            bossAreas.remove(name);
             teamSizes.remove(name);
             // Se conserva el directorio del mundo para evitar borrar archivos automaticamente.
         }
@@ -182,26 +220,33 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private Location safeRandomLocation(World world, Clipboard clipboard, BlockVector3 pasteAt) {
-        BlockVector3 min = clipboard.getMinimumPoint();
-        BlockVector3 max = clipboard.getMaximumPoint();
-        BlockVector3 origin = clipboard.getOrigin();
-        int xMin = pasteAt.x() + min.x() - origin.x();
-        int xMax = pasteAt.x() + max.x() - origin.x();
-        int yMin = Math.max(world.getMinHeight() + 2, pasteAt.y() + min.y() - origin.y());
-        int yMax = Math.min(world.getMaxHeight() - 3, pasteAt.y() + max.y() - origin.y());
-        int zMin = pasteAt.z() + min.z() - origin.z();
-        int zMax = pasteAt.z() + max.z() - origin.z();
+        BlockVector3 min = clipboard.getMinimumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+        BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+        int xMin = min.x(), xMax = max.x();
+        int yMin = Math.max(world.getMinHeight() + 2, min.y());
+        int yMax = Math.min(world.getMaxHeight() - 3, max.y());
+        int zMin = min.z(), zMax = max.z();
         if (xMin > xMax || yMin > yMax || zMin > zMax) return null;
-        for (int i = 0; i < 250; i++) {
+        // Elegir columnas X/Z y recorrer sus alturas: evita la baja probabilidad
+        // de acertar con una superficie al elegir Y completamente al azar.
+        for (int i = 0; i < 300; i++) {
             int x = xMin + random.nextInt(xMax - xMin + 1);
-            int y = yMin + random.nextInt(yMax - yMin + 1);
             int z = zMin + random.nextInt(zMax - zMin + 1);
-            if (world.getBlockAt(x, y - 1, z).getType().isSolid()
-                    && world.getBlockAt(x, y, z).isPassable()
-                    && world.getBlockAt(x, y + 1, z).isPassable()) {
-                Location location = new Location(world, x + .5, y, z + .5);
-                if (world.getNearbyEntities(location, 3, 3, 3).stream().noneMatch(e -> e instanceof Player)) return location;
+            List<Integer> candidates = new ArrayList<>();
+            for (int y = yMin; y <= yMax; y++) {
+                var floor = world.getBlockAt(x, y - 1, z);
+                var feet = world.getBlockAt(x, y, z);
+                var head = world.getBlockAt(x, y + 1, z);
+                if (!floor.getType().isSolid() || !feet.isPassable() || !head.isPassable()) continue;
+                if (floor.isLiquid() || feet.isLiquid() || head.isLiquid()) continue;
+                String floorName = floor.getType().name();
+                if (floorName.contains("LEAVES") || floorName.contains("MAGMA") || floorName.contains("CACTUS")) continue;
+                candidates.add(y);
             }
+            if (candidates.isEmpty()) continue;
+            int y = candidates.get(random.nextInt(candidates.size()));
+            Location loc = new Location(world, x + .5, y, z + .5);
+            if (world.getNearbyEntities(loc, 3, 3, 3).stream().noneMatch(e -> e instanceof Player)) return loc;
         }
         return null;
     }
@@ -258,6 +303,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
-        // La instancia se mantiene mientras haya participantes; no se fuerza salida al desconectar.
+        // Limpiar la sesion al desconectar, para que no quede bloqueado "ya esta en partida".
+        if (playingWorld.containsKey(e.getPlayer().getUniqueId())) leave(e.getPlayer());
     }
 }
