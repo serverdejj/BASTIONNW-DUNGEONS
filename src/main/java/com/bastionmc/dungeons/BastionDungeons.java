@@ -17,6 +17,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
 import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
+import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.block.BlockBreakEvent;
 import org.bukkit.event.block.BlockPlaceEvent;
@@ -51,6 +52,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<UUID, String> playingWorld = new HashMap<>();
     private final Set<String> instanceWorlds = new HashSet<>();
     private final Map<String, Set<UUID>> enemies = new HashMap<>();
+    private final Map<UUID, String> enemyTypes = new HashMap<>();
     private final Map<String, UUID> bosses = new HashMap<>();
     private final Map<String, Integer> teamSizes = new HashMap<>();
     private final Random random = new Random();
@@ -86,7 +88,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.7-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.8-dev listo.");
     }
 
     private void loadSchedule() {
@@ -287,6 +289,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     for (Player member : team) colored(member,
                             net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡Todo Listo!" + org.bukkit.ChatColor.WHITE
                             + ", Enviándote a la mazmorra");
+                    for (Player member : team) {
+                        member.sendTitle(hex("#D2A5FF") + "" + ChatColor.BOLD + "Entrando a Dungeons",
+                                "", 0, 40, 10);
+                    }
                     try { start(team, file); }
                     catch (Exception ex) {
                         getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
@@ -513,6 +519,40 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return living;
     }
 
+    // Nombre y vida en una sola linea sobre la cabeza, sin plugins de modelos/hologramas.
+    // Usar la salud real del mob (incluidas las modificaciones de MythicMobs).
+    private void updateEnemyName(LivingEntity mob, String mobType) {
+        if (mob.isDead() || !instanceWorlds.contains(mob.getWorld().getName())) return;
+        String name = switch (mobType) {
+            case "SkeletalMinion" -> hex("#D2A5FF") + "" + ChatColor.BOLD + "☠ ESQUELETO MALDITO ☠";
+            case "SkeletalKnight" -> hex("#FFAA55") + "" + ChatColor.BOLD + "⚔ GUARDIÁN ESQUELÉTICO ⚔";
+            case "SkeletonKing" -> hex("#FF3333") + "" + ChatColor.BOLD + "♛ REY ESQUELETO ♛";
+            default -> return;
+        };
+        var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+        double max = maxHealth == null ? mob.getHealth() : maxHealth.getValue();
+        long hp = Math.max(0L, (long) Math.ceil(mob.getHealth()));
+        long total = Math.max(1L, (long) Math.ceil(max));
+        mob.setCustomName(name + ChatColor.GRAY + " | " + ChatColor.RED + "❤ " + hp + "/" + total);
+        mob.setCustomNameVisible(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onEnemyDamaged(EntityDamageEvent event) {
+        if (!(event.getEntity() instanceof LivingEntity mob)) return;
+        String world = mob.getWorld().getName();
+        if (!instanceWorlds.contains(world)) return;
+        UUID id = mob.getUniqueId();
+        String type = id.equals(bosses.get(world)) ? "SkeletonKing" :
+                enemies.getOrDefault(world, Collections.emptySet()).contains(id) ?
+                (enemyTypes.getOrDefault(id, "SkeletalMinion")) : null;
+        if (type == null) return;
+        // Esperar un tick para leer la vida DESPUES del daño aplicado por Bukkit/MythicMobs.
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (mob.isValid() && !mob.isDead()) updateEnemyName(mob, type);
+        });
+    }
+
     // Las instancias son de solo lectura: proteger la estructura y a los compañeros.
     @EventHandler(ignoreCancelled = true)
     public void onDungeonPvp(EntityDamageByEntityEvent event) {
@@ -715,6 +755,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
                 LivingEntity mob = spawnMythic(mobId, loc);
                 active.add(mob.getUniqueId());
+                enemyTypes.put(mob.getUniqueId(), mobId);
+                updateEnemyName(mob, mobId);
                 totalSpawned.merge(name, 1, Integer::sum);
             } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error invocando enemigo", ex); break; }
         }
@@ -737,10 +779,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 Entity entity = Bukkit.getEntity(mobId);
                 if (!(entity instanceof LivingEntity mob) || mob.isDead()) {
                     // Un enemigo desaparecido no debe bloquear la partida.
-                    active.remove(mobId); protectedMobs.remove(mobId); lostTicks.remove(mobId);
+                    active.remove(mobId); protectedMobs.remove(mobId); lostTicks.remove(mobId); enemyTypes.remove(mobId);
                     defeated.merge(name, 1, Integer::sum);
                     continue;
                 }
+                updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
                 Player closest = players.stream().min(Comparator.comparingDouble(p -> p.getLocation().distanceSquared(mob.getLocation()))).orElse(null);
                 if (closest == null) continue;
                 if (mob.getLocation().distanceSquared(closest.getLocation()) > 20 * 20) {
@@ -755,7 +798,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (defeated.getOrDefault(name, 0) >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(world);
             else spawnNextMobs(world);
         }, 40L, 100L));
-        for (Player p : world.getPlayers()) msg(p, "¡Derrota a 10 enemigos! Apareceran de 3 en 3.");
+
     }
 
     private void startBossCountdown(World world) {
@@ -798,6 +841,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             var attribute = boss.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
             if (attribute != null) { attribute.setBaseValue(hp); boss.setHealth(hp); }
             bosses.put(name, boss.getUniqueId());
+            updateEnemyName(boss, "SkeletonKing");
             for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el " + hex("#FD9696") + "Jefe Final" + ChatColor.WHITE + "!.");
         } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
     }
@@ -805,7 +849,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     @EventHandler public void onMobDeath(EntityDeathEvent event) {
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
-        protectedMobs.remove(dead); lostTicks.remove(dead);
+        protectedMobs.remove(dead); lostTicks.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;
         if (active.remove(dead)) {
