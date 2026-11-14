@@ -177,6 +177,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void colored(Player p, String message) { p.sendMessage(prefix() + message); }
+    private void partyMessage(Player p, String message) {
+        p.sendMessage(hex("#9640FC") + "" + ChatColor.BOLD + "✦ MAZMORRAS » " + ChatColor.RESET + message);
+    }
     private net.md_5.bungee.api.ChatColor hex(String value) { return net.md_5.bungee.api.ChatColor.of(value); }
     private boolean dungeonWorld(World world) { return world != null && instanceWorlds.contains(world.getName()); }
     private boolean dungeonPlayer(Player player) {
@@ -330,22 +333,28 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     if (!canJoin(target)) { msg(p, "Ese jugador no puede entrar durante esta apertura."); return true; }
                     if (leaderOf.containsKey(target.getUniqueId()) || playingWorld.containsKey(target.getUniqueId()) || preparing.contains(target.getUniqueId())) { msg(p,"Ese jugador ya esta en una party o partida."); return true; }
                     invites.put(target.getUniqueId(), id);
-                    msg(target,p.getName()+" te invito. Usa /dungeon party accept"); msg(p,"Invitacion enviada.");
+                    partyMessage(target, ChatColor.WHITE + "¡Has recibido una invitación para una mazmorra de " + p.getName() + "!");
+                    target.sendMessage(ChatColor.GRAY + "Usa " + ChatColor.WHITE + "/dungeon party accept" + ChatColor.GRAY + " para unirte.");
+                    partyMessage(p, ChatColor.WHITE + "¡Invitación enviada correctamente!");
                 }
                 case "accept" -> {
                     if (!canJoin(p)) return true;
                     UUID owner = invites.remove(id);
                     if (owner == null || Bukkit.getPlayer(owner) == null || playingWorld.containsKey(owner) || preparing.contains(owner) || members(owner).size() >= 4) { msg(p,"No hay invitacion valida."); return true; }
                     if (leaderOf.containsKey(id) || playingWorld.containsKey(id) || preparing.contains(id)) { msg(p,"Ya estas en otra party o partida."); return true; }
-                    leaderOf.put(id, owner); msg(p,"Te uniste a la party.");
-                    Player lead = Bukkit.getPlayer(owner); if (lead != null) msg(lead,p.getName()+" se unio.");
+                    leaderOf.put(id, owner);
+                    partyMessage(p, ChatColor.GREEN + "¡Te has unido al equipo!");
+                    for (Player member : members(owner)) {
+                        if (!member.getUniqueId().equals(id))
+                            partyMessage(member, ChatColor.GREEN + "¡" + p.getName() + " se ha unido al equipo!");
+                    }
                 }
                 case "leave" -> {
                     if (playingWorld.containsKey(id) || preparing.contains(id)) { msg(p,"En partida o preparacion usa /dungeon leave."); return true; }
-                    if (leader(id).equals(id)) { leaderOf.entrySet().removeIf(e -> e.getValue().equals(id)); msg(p,"Party disuelta."); }
-                    else { leaderOf.remove(id); msg(p,"Saliste de la party."); }
+                    if (leader(id).equals(id)) { leaderOf.entrySet().removeIf(e -> e.getValue().equals(id)); partyMessage(p, ChatColor.WHITE + "¡Equipo disuelto!"); }
+                    else { leaderOf.remove(id); partyMessage(p, ChatColor.WHITE + "¡Has salido del equipo!"); }
                 }
-                case "list" -> msg(p,"Party: " + String.join(", ", members(leader(id)).stream().map(Player::getName).toList()));
+                case "list" -> partyMessage(p, ChatColor.WHITE + "Integrantes: " + ChatColor.LIGHT_PURPLE + String.join(ChatColor.GRAY + ", " + ChatColor.LIGHT_PURPLE, members(leader(id)).stream().map(Player::getName).toList()));
                 default -> msg(p,"Subcomando desconocido.");
             }
             return true;
@@ -958,14 +967,27 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!instanceWorlds.contains(name) || finishing.contains(name) || !roundTransitioning.add(name)) return;
         int next = rounds.getOrDefault(name, 1) + 1;
         if (next > 3) return;
-        String title = next == 2 ? hex("#9640FC") + "" + ChatColor.BOLD + "RONDA 2"
+        String title = next == 2 ? hex("#9640FC") + "" + ChatColor.BOLD + "OLEADA 2"
                 : hex("#FF3333") + "" + ChatColor.BOLD + "¡JEFE FINAL!";
-        for (Player p : fighters(world)) {
-            p.sendTitle(ChatColor.WHITE + "☠ " + title + ChatColor.WHITE + " ☠", "", 5, 90, 5);
+        String heading = ChatColor.WHITE + "☠ " + title + ChatColor.WHITE + " ☠";
+        for (Player p : fighters(world))
             p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.3f);
-        }
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int remaining = 5;
+            @Override public void run() {
+                if (!instanceWorlds.contains(name) || finishing.contains(name)
+                        || !roundTransitioning.contains(name) || fighters(world).isEmpty()) {
+                    cancel(); return;
+                }
+                String subtitle = ChatColor.WHITE + (next == 2 ? "Comienza en " : "Aparece en ") + remaining + "...";
+                for (Player p : fighters(world)) p.sendTitle(heading, subtitle, 0, 25, 0);
+                if (remaining-- == 0) cancel();
+            }
+        }.runTaskTimer(this, 0L, 20L);
         Bukkit.getScheduler().runTaskLater(this, () -> {
-            if (!instanceWorlds.contains(name) || finishing.contains(name) || fighters(world).isEmpty()) return;
+            if (!instanceWorlds.contains(name) || finishing.contains(name) || fighters(world).isEmpty()) {
+                roundTransitioning.remove(name); return;
+            }
             rounds.put(name, next);
             totalSpawned.put(name, 0);
             defeated.put(name, 0);
@@ -1094,11 +1116,27 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             releaseParty(name);
             for (Player p : winners) {
                 frozen.remove(p.getUniqueId());
-                p.sendTitle(net.md_5.bungee.api.ChatColor.of("#FFF800") + "" + ChatColor.BOLD + "¡VICTORIA!",
-                        ChatColor.WHITE + "¡Han derrotado a todos los enemigos!", 10, 80, 10);
+                p.sendTitle(ChatColor.GREEN + "" + ChatColor.BOLD + "✦ ¡MAZMORRA COMPLETADA! ✦",
+                        ChatColor.WHITE + "¡Has derrotado a todos los enemigos!", 10, 80, 10);
                 p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
-                msg(p, "¡Victoria! Tienes 10 segundos para explorar y recoger recompensas.");
+                partyMessage(p, ChatColor.GOLD + "¡VICTORIA!");
+                p.sendMessage(ChatColor.WHITE + "Tienes " + ChatColor.GOLD + "10 segundos" + ChatColor.WHITE
+                        + " para recoger tus recompensas.");
+                p.sendMessage(ChatColor.GRAY + "Después regresarás automáticamente al spawn.");
             }
+            new org.bukkit.scheduler.BukkitRunnable() {
+                int seconds = 10;
+                @Override public void run() {
+                    if (!instanceWorlds.contains(name)) { cancel(); return; }
+                    for (Player p : winners) {
+                        if (p.isOnline() && name.equals(playingWorld.get(p.getUniqueId()))) {
+                            p.sendActionBar(ChatColor.GOLD + "✦ RECOGE TUS RECOMPENSAS ✦ "
+                                    + ChatColor.WHITE + "Regresando al spawn en " + seconds + "s...");
+                        }
+                    }
+                    if (--seconds < 0) cancel();
+                }
+            }.runTaskTimer(this, 0L, 20L);
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 for (Player p : winners) {
                     if (name.equals(playingWorld.get(p.getUniqueId()))) returnPlayer(p, name);
