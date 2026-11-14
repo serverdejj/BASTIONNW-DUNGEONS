@@ -81,6 +81,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private static final int PASTE_Y = 100;
     private final File spawnFile = new File(getDataFolder(), "spawns.yml");
     private final File mobSpawnFile = new File(getDataFolder(), "mobspawns.yml");
+    private final File lootFile = new File(getDataFolder(), "loot.yml");
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
@@ -89,7 +90,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.9-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.10-dev listo.");
     }
 
     private void loadSchedule() {
@@ -189,10 +190,75 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         player.addPotionEffect(new PotionEffect(PotionEffectType.DARKNESS, 20 * 120, 0, false, false, false));
     }
 
+    // Loot configurable por tipo de enemigo, guardado en YAML con todos los metadatos del ItemStack.
+    private String lootMob(String raw) {
+        for (String id : List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"))
+            if (id.equalsIgnoreCase(raw)) return id;
+        return null;
+    }
+
+    private boolean lootCommand(Player p, String[] args) {
+        if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
+        if (args.length < 3) { msg(p, "Uso: /dungeon loot add <enemigo> <porcentaje> | list <enemigo> | remove <enemigo> <id>"); return true; }
+        String mob = lootMob(args[2]);
+        if (mob == null) { msg(p, "Enemigos: SkeletalMinion, SkeletalKnight, SkeletonKing."); return true; }
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(lootFile);
+        String path = "loot." + mob;
+        String action = args[1].toLowerCase(Locale.ROOT);
+        if (action.equals("list")) {
+            var section = cfg.getConfigurationSection(path);
+            if (section == null || section.getKeys(false).isEmpty()) { msg(p, "Sin loot configurado para " + mob); return true; }
+            for (String key : section.getKeys(false)) {
+                org.bukkit.inventory.ItemStack item = cfg.getItemStack(path + "." + key + ".item");
+                if (item != null) msg(p, "#" + key + " - " + item.getType() + " x" + item.getAmount() + " - " + cfg.getDouble(path + "." + key + ".chance") + "%");
+            }
+            return true;
+        }
+        if (args.length != 4) { msg(p, "Falta porcentaje o ID. Usa /dungeon loot " + action + " " + mob + " <valor>"); return true; }
+        if (action.equals("add")) {
+            double chance;
+            try { chance = Double.parseDouble(args[3]); }
+            catch (NumberFormatException ex) { msg(p, "Probabilidad invalida. Ejemplo: 0.01, 5, 100."); return true; }
+            if (!Double.isFinite(chance) || chance < 0.01 || chance > 100) { msg(p, "La probabilidad debe estar entre 0.01 y 100."); return true; }
+            org.bukkit.inventory.ItemStack item = p.getInventory().getItemInMainHand();
+            if (item.getType().isAir()) { msg(p, "Sujeta el objeto en tu mano principal."); return true; }
+            String key = UUID.randomUUID().toString().substring(0, 8);
+            cfg.set(path + "." + key + ".item", item.clone());
+            cfg.set(path + "." + key + ".chance", chance);
+            try { cfg.save(lootFile); msg(p, "Loot guardado para " + mob + ": #" + key + " (" + chance + "%)."); }
+            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando loot", ex); msg(p, "No se pudo guardar el loot."); }
+            return true;
+        }
+        if (action.equals("remove")) {
+            String key = args[3];
+            if (!key.matches("[a-fA-F0-9]{8}") || !cfg.contains(path + "." + key + ".item")) { msg(p, "ID de loot no encontrado. Usa /dungeon loot list " + mob); return true; }
+            cfg.set(path + "." + key, null);
+            try { cfg.save(lootFile); msg(p, "Loot #" + key + " eliminado."); }
+            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error eliminando loot", ex); msg(p, "No se pudo guardar el cambio."); }
+            return true;
+        }
+        msg(p, "Acciones: add, list, remove.");
+        return true;
+    }
+
+    private void rollLoot(EntityDeathEvent event, String mob) {
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(lootFile);
+        var section = cfg.getConfigurationSection("loot." + mob);
+        if (section == null) return;
+        for (String key : section.getKeys(false)) {
+            String base = "loot." + mob + "." + key;
+            org.bukkit.inventory.ItemStack item = cfg.getItemStack(base + ".item");
+            double chance = cfg.getDouble(base + ".chance", 0);
+            if (item != null && !item.getType().isAir() && chance > 0 && random.nextDouble() * 100 < chance)
+                event.getDrops().add(item.clone());
+        }
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
         UUID id = p.getUniqueId();
         if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave | /dungeon setspawn | /dungeon setmobspawn | /dungeon clearmobspawns"); return true; }
+        if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
             String instance = playingWorld.get(id);
@@ -560,7 +626,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (name.isEmpty()) return;
         var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
         double max = maxHealth == null ? mob.getHealth() : maxHealth.getValue();
-        if ("SkeletonKing".equals(mobType)) max += 176;
+        
         long hp = Math.max(0L, (long) Math.ceil(mob.getHealth() + mob.getAbsorptionAmount()));
         long total = Math.max(1L, (long) Math.ceil(max));
         mob.setCustomName(name + ChatColor.GRAY + " | " + ChatColor.RED + "❤ " + hp + "/" + total);
@@ -813,7 +879,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             try {
                 String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
                 LivingEntity mob = spawnMythic(mobId, loc);
-                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 120 : 300);
+                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 60 : 150);
                 active.add(mob.getUniqueId());
                 enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
@@ -897,7 +963,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         try {
             LivingEntity boss = spawnMythic("SkeletonKing", loc);
-            setEnemyHealth(boss, 1200);
+            setEnemyHealth(boss, 600);
             bosses.put(name, boss.getUniqueId());
             updateEnemyName(boss, "SkeletonKing");
             for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el " + hex("#FD9696") + "Jefe Final" + ChatColor.WHITE + "!.");
@@ -907,6 +973,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     @EventHandler public void onMobDeath(EntityDeathEvent event) {
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
+        String deadType = enemyTypes.get(dead);
+        if (deadType == null && dead.equals(bosses.get(name))) deadType = "SkeletonKing";
+        if (deadType != null) rollLoot(event, deadType);
         protectedMobs.remove(dead); lostTicks.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;
@@ -924,18 +993,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             List<Player> winners = new ArrayList<>(world.getPlayers());
             releaseParty(name);
             for (Player p : winners) {
-                frozen.add(p.getUniqueId());
+                frozen.remove(p.getUniqueId());
                 p.sendTitle(net.md_5.bungee.api.ChatColor.of("#FFF800") + "" + ChatColor.BOLD + "¡VICTORIA!",
                         ChatColor.WHITE + "¡Han derrotado a todos los enemigos!", 10, 80, 10);
                 p.playSound(p.getLocation(), Sound.UI_TOAST_CHALLENGE_COMPLETE, 1f, 1f);
-                msg(p, "¡Victoria! Regresando al lobby en 5 segundos...");
+                msg(p, "¡Victoria! Tienes 10 segundos para explorar y recoger recompensas.");
             }
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 for (Player p : winners) {
                     if (name.equals(playingWorld.get(p.getUniqueId()))) returnPlayer(p, name);
                 }
                 finishInstance(name);
-            }, 100L);
+            }, 200L);
         }
     }
 
