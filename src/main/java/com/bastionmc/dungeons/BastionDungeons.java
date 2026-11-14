@@ -433,6 +433,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs"))
             throw new IllegalStateException("MythicMobs no esta habilitado");
         String name = "bd_" + UUID.randomUUID().toString().substring(0, 8);
+        // Generador propio: los mundos de mazmorra no requieren DeepVoid.
         World world = new WorldCreator(name).environment(World.Environment.NORMAL)
                 .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
         if (world == null) throw new IllegalStateException("No se pudo crear mundo");
@@ -449,51 +450,47 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             int minCz = min.z() >> 4, maxCz = max.z() >> 4;
             long chunkCount = (long) (maxCx - minCx + 1) * (maxCz - minCz + 1);
             if (chunkCount > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunkCount + " chunks (limite 256)");
-            // Cargar chunks de manera asincrona antes de ejecutar el pegado.
-            // La API de WorldEdit se ejecuta en el hilo del servidor; no se hacen llamadas Bukkit asincronas.
-            List<CompletableFuture<Chunk>> loads = new ArrayList<>();
-            for (int cx = minCx; cx <= maxCx; cx++) for (int cz = minCz; cz <= maxCz; cz++)
-                loads.add(world.getChunkAtAsync(cx, cz, true));
-            // Preparación silenciosa: los jugadores ven oscuridad y cuenta regresiva.
-            CompletableFuture.allOf(loads.toArray(new CompletableFuture[0])).whenComplete((ignored, failure) ->
-                Bukkit.getScheduler().runTask(this, () -> {
-                    if (!instanceWorlds.contains(name)) return;
-                    if (failure != null) {
-                        getLogger().log(java.util.logging.Level.SEVERE, "Error cargando chunks", failure);
-                        cleanupFailedWorld(name);
-                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "No se pudo preparar la mazmorra."); }
-                        return;
-                    }
-                    try {
-                        try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
-                            Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
-                                    .to(pasteAt).ignoreAirBlocks(false).build());
-                        }
-                        Location spawn = configuredSpawn(world, file.getName());
-                        if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
-                        if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
-                        world.setSpawnLocation(spawn);
-                        for (Player member : team) {
-                            if (!member.isOnline()) continue;
-                            returns.put(member.getUniqueId(), member.getLocation().clone());
-                            playingWorld.put(member.getUniqueId(), name);
-                            member.teleport(spawn);
-                            clearLobbyEffects(member);
-                            frozen.add(member.getUniqueId());
-                        }
-                        schematicNames.put(name, file.getName());
-                        teamSizes.put(name, team.size());
-                        enemies.put(name, new HashSet<>());
-                        entryPoints.put(name, spawn.clone());
-                        startCountdown(world, clipboard, pasteAt, team.size());
-                    } catch (Exception ex) {
-                        getLogger().log(java.util.logging.Level.SEVERE, "Error pegando schematic", ex);
-                        cleanupFailedWorld(name);
-                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "Error creando mazmorra; revisa consola."); }
-                    }
-                }));
+            // Cargar los chunks y pegar el schematic directamente en el hilo principal.
+            // No depender de generadores externos ni de callbacks asincronos.
+            getLogger().info("Preparando mazmorra " + name + " con " + file.getName() + " (" + chunkCount + " chunks)");
+            for (int cx = minCx; cx <= maxCx; cx++) {
+                for (int cz = minCz; cz <= maxCz; cz++) {
+                    world.getChunkAt(cx, cz).load(true);
+                }
+            }
+            try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
+                Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
+                        .to(pasteAt).ignoreAirBlocks(false).build());
+            }
+            Location spawn = configuredSpawn(world, file.getName());
+            if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
+            if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
+            world.setSpawnLocation(spawn);
+            schematicNames.put(name, file.getName());
+            teamSizes.put(name, team.size());
+            enemies.put(name, new HashSet<>());
+            entryPoints.put(name, spawn.clone());
+            for (Player member : team) {
+                if (!member.isOnline()) continue;
+                Location original = member.getLocation().clone();
+                if (!member.teleport(spawn))
+                    throw new IllegalStateException("Teletransporte rechazado para " + member.getName());
+                returns.put(member.getUniqueId(), original);
+                playingWorld.put(member.getUniqueId(), name);
+                clearLobbyEffects(member);
+                frozen.add(member.getUniqueId());
+            }
+            getLogger().info("Mazmorra " + name + " creada y jugadores teletransportados correctamente");
+            startCountdown(world, clipboard, pasteAt, team.size());
         } catch (Exception ex) {
-            cleanupFailedWorld(name);
+            for (Player member : team) {
+                UUID uuid = member.getUniqueId();
+                if (name.equals(playingWorld.get(uuid))) returnPlayer(member, name);
+                else if (member.isOnline()) clearLobbyEffects(member);
+                enteredThisWindow.remove(uuid);
+            }
+            saveSchedule();
+            finishInstance(name);
             throw ex;
         }
     }
