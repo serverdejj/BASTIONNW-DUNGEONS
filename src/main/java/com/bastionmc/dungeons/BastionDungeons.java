@@ -53,7 +53,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<String> instanceWorlds = new HashSet<>();
     private final Map<String, Set<UUID>> enemies = new HashMap<>();
     private final Map<UUID, String> enemyTypes = new HashMap<>();
-    private final Map<String, UUID> bosses = new HashMap<>();
+    private final Map<String, Set<UUID>> bosses = new HashMap<>();
+    private final Map<String, Integer> rounds = new HashMap<>();
+    private final Set<String> roundTransitioning = new HashSet<>();
     private final Map<String, Integer> teamSizes = new HashMap<>();
     private final Random random = new Random();
     private final Set<UUID> frozen = new HashSet<>();
@@ -77,8 +79,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private long lastAnnouncedWindow = -1L;
     private final Set<UUID> enteredThisWindow = new HashSet<>();
     private final File scheduleFile = new File(getDataFolder(), "schedule.yml");
-    private static final int TOTAL_MOBS = 10;
-    private static final int MAX_ACTIVE = 3;
+    // Rondas: 10 por jugador, 12 por jugador, y 1-2 jefes.
     private static final int PASTE_Y = 100;
     private final File spawnFile = new File(getDataFolder(), "spawns.yml");
     private final File mobSpawnFile = new File(getDataFolder(), "mobspawns.yml");
@@ -533,8 +534,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
-        UUID boss = bosses.remove(name);
-        if (boss != null) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
+        for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
+        bosses.remove(name); rounds.remove(name); roundTransitioning.remove(name);
         enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
         entryPoints.remove(name); schematicNames.remove(name);
         totalSpawned.remove(name); defeated.remove(name); bossCountdownStarted.remove(name);
@@ -659,7 +660,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String world = mob.getWorld().getName();
         if (!instanceWorlds.contains(world)) return;
         UUID id = mob.getUniqueId();
-        String type = id.equals(bosses.get(world)) ? "SkeletonKing" :
+        String type = bosses.getOrDefault(world, Set.of()).contains(id) ? "SkeletonKing" :
                 enemies.getOrDefault(world, Collections.emptySet()).contains(id) ?
                 (enemyTypes.getOrDefault(id, "SkeletalMinion")) : null;
         if (type == null) return;
@@ -775,7 +776,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.65f, 1.5f);
                     }
                     bossAreas.put(name, new BossArea(clipboard, pasteAt));
-                    totalSpawned.put(name, 0); defeated.put(name, 0);
+                    totalSpawned.put(name, 0); defeated.put(name, 0); rounds.put(name, 1);
                     spawnNextMobs(world);
                     startTracker(world);
                     cancel(); return;
@@ -907,33 +908,71 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
+    private int roundTotal(String name) {
+        int players = Math.max(1, teamSizes.getOrDefault(name, 1));
+        return (rounds.getOrDefault(name, 1) == 1 ? 10 : 12) * players;
+    }
+
+    private int batchSize(String name) {
+        int players = Math.max(1, teamSizes.getOrDefault(name, 1));
+        int round = rounds.getOrDefault(name, 1);
+        int spawned = totalSpawned.getOrDefault(name, 0);
+        if (round == 1) return (spawned < 6 * players ? 3 : 4) * players;
+        return 4 * players;
+    }
+
     private void spawnNextMobs(World world) {
         String name = world.getName();
-        if (!instanceWorlds.contains(name) || bossCountdownStarted.containsKey(name)) return;
+        if (!instanceWorlds.contains(name) || finishing.contains(name) || roundTransitioning.contains(name)
+                || rounds.getOrDefault(name, 1) >= 3) return;
         Set<UUID> active = enemies.get(name);
-        if (active == null) return;
+        if (active == null || !active.isEmpty()) return; // Oleadas completas, nunca mezclar grupos.
         List<Player> players = fighters(world);
         if (players.isEmpty()) return;
+        int total = roundTotal(name);
+        int count = Math.min(batchSize(name), total - totalSpawned.getOrDefault(name, 0));
         int attempts = 0;
-        while (active.size() < MAX_ACTIVE && totalSpawned.getOrDefault(name, 0) < TOTAL_MOBS && attempts++ < 25) {
+        while (active.size() < count && attempts++ < Math.max(25, count * 12)) {
             Player target = players.get(random.nextInt(players.size()));
             Location loc = enemySpawnLocation(world, target.getLocation());
             if (loc == null) continue;
             try {
                 String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
                 LivingEntity mob = spawnMythic(mobId, loc);
-                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 60 : 150);
+                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
                 active.add(mob.getUniqueId());
                 enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
                 totalSpawned.merge(name, 1, Integer::sum);
             } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error invocando enemigo", ex); break; }
         }
-        if (active.isEmpty() && totalSpawned.getOrDefault(name, 0) < TOTAL_MOBS && announcedMissing.add(name)) {
-            getLogger().warning("Sin posiciones seguras para enemigos cerca de jugadores en " + name);
+        if (active.isEmpty() && totalSpawned.getOrDefault(name, 0) < total && announcedMissing.add(name)) {
+            getLogger().warning("Sin posiciones seguras para enemigos en " + name);
             for (Player p : players) msg(p, "No se encontraron posiciones seguras para enemigos.");
         }
         if (!active.isEmpty()) announcedMissing.remove(name);
+    }
+
+    private void advanceRound(World world) {
+        String name = world.getName();
+        if (!instanceWorlds.contains(name) || finishing.contains(name) || !roundTransitioning.add(name)) return;
+        int next = rounds.getOrDefault(name, 1) + 1;
+        if (next > 3) return;
+        String title = next == 2 ? hex("#9640FC") + "" + ChatColor.BOLD + "RONDA 2"
+                : hex("#FF3333") + "" + ChatColor.BOLD + "¡JEFE FINAL!";
+        for (Player p : fighters(world)) {
+            p.sendTitle(ChatColor.WHITE + "☠ " + title + ChatColor.WHITE + " ☠", "", 5, 90, 5);
+            p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, 1.3f);
+        }
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!instanceWorlds.contains(name) || finishing.contains(name) || fighters(world).isEmpty()) return;
+            rounds.put(name, next);
+            totalSpawned.put(name, 0);
+            defeated.put(name, 0);
+            roundTransitioning.remove(name);
+            if (next == 2) spawnNextMobs(world);
+            else spawnBoss(world);
+        }, 100L);
     }
 
     // Persecución continua; si un mob no avanza durante 4 segundos, reaparece cerca del objetivo.
@@ -987,69 +1026,48 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
                 pursueEnemy(mob, mobId, players, world);
             }
-            UUID bossId = bosses.get(name);
-            if (bossId != null) {
+            for (UUID bossId : new HashSet<>(bosses.getOrDefault(name, Set.of()))) {
                 Entity entity = Bukkit.getEntity(bossId);
                 if (entity instanceof LivingEntity boss && !boss.isDead()) {
                     updateEnemyName(boss, "SkeletonKing");
                     pursueEnemy(boss, bossId, players, world);
                 }
             }
-            if (!bossCountdownStarted.containsKey(name)) {
-                if (defeated.getOrDefault(name, 0) >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(world);
+            if (rounds.getOrDefault(name, 1) < 3 && !roundTransitioning.contains(name)) {
+                if (defeated.getOrDefault(name, 0) >= roundTotal(name) && active.isEmpty()) advanceRound(world);
                 else spawnNextMobs(world);
             }
         }, 40L, 20L));
-    }
-
-    private void startBossCountdown(World world) {
-        String name = world.getName();
-        if (bossCountdownStarted.putIfAbsent(name, true) != null) return;
-        new org.bukkit.scheduler.BukkitRunnable() {
-            int seconds = 5;
-            @Override public void run() {
-                if (!instanceWorlds.contains(name) || fighters(world).isEmpty()) { cancel(); return; }
-                if (seconds == 0) {
-                    for (Player p : world.getPlayers()) {
-                        frozen.remove(p.getUniqueId());
-                        p.sendTitle(ChatColor.DARK_RED + "¡SKELETON KING!", ChatColor.GOLD + "¡DERROTA AL JEFE!", 0, 45, 10);
-                        p.playSound(p.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1f, .7f);
-                    }
-                    spawnBoss(world); cancel(); return;
-                }
-                for (Player p : world.getPlayers()) {
-                    p.sendTitle(ChatColor.RED + "" + seconds, ChatColor.GOLD + "¡EL JEFE SE ACERCA!", 0, 23, 0);
-                    p.playSound(p.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 1f, seconds <= 3 ? 1.8f : 1f);
-                }
-                seconds--;
-            }
-        }.runTaskTimer(this, 0L, 20L);
     }
 
     private void spawnBoss(World world) {
         String name = world.getName();
         List<Player> players = fighters(world);
         if (players.isEmpty()) return;
-        Location loc = enemySpawnLocation(world, players.get(0).getLocation());
-        if (loc == null) {
-            getLogger().warning("No hay lugar para SkeletonKing en " + name);
-            for (Player p : players) msg(p, "No hay lugar para el jefe. Revisa consola.");
-            return;
+        int count = teamSizes.getOrDefault(name, 1) >= 3 ? 2 : 1;
+        Set<UUID> spawnedBosses = bosses.computeIfAbsent(name, k -> new HashSet<>());
+        for (int i = 0; i < count; i++) {
+            Location loc = enemySpawnLocation(world, players.get(i % players.size()).getLocation());
+            if (loc == null) { getLogger().warning("No hay lugar para SkeletonKing en " + name); continue; }
+            try {
+                LivingEntity boss = spawnMythic("SkeletonKing", loc);
+                setEnemyHealth(boss, 500);
+                spawnedBosses.add(boss.getUniqueId());
+                updateEnemyName(boss, "SkeletonKing");
+            } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
         }
-        try {
-            LivingEntity boss = spawnMythic("SkeletonKing", loc);
-            setEnemyHealth(boss, 600);
-            bosses.put(name, boss.getUniqueId());
-            updateEnemyName(boss, "SkeletonKing");
-            for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el " + hex("#FD9696") + "Jefe Final" + ChatColor.WHITE + "!.");
-        } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
+        if (spawnedBosses.isEmpty()) {
+            for (Player p : players) msg(p, "No se pudo invocar al jefe. Revisa consola.");
+        } else {
+            for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el Jefe Final!");
+        }
     }
 
     @EventHandler public void onMobDeath(EntityDeathEvent event) {
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
         String deadType = enemyTypes.get(dead);
-        if (deadType == null && dead.equals(bosses.get(name))) deadType = "SkeletonKing";
+        if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = "SkeletonKing";
         if (deadType != null) rollLoot(event, deadType);
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
@@ -1058,10 +1076,17 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             int kills = defeated.merge(name, 1, Integer::sum);
             for (Player p : event.getEntity().getWorld().getPlayers())
                 p.sendMessage(net.md_5.bungee.api.ChatColor.of("#FFA5A5") + "¡Uno menos!" + org.bukkit.ChatColor.WHITE
-                        + ", ¡Quedan " + Math.max(0, TOTAL_MOBS - kills) + "/" + TOTAL_MOBS + " enemigos!.");
-            if (kills >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(event.getEntity().getWorld());
+                        + ", ¡Quedan " + Math.max(0, roundTotal(name) - kills) + "/" + roundTotal(name) + " enemigos!.");
+            if (kills >= roundTotal(name) && active.isEmpty()) advanceRound(event.getEntity().getWorld());
             else spawnNextMobs(event.getEntity().getWorld());
-        } else if (dead.equals(bosses.get(name))) {
+        } else if (bosses.getOrDefault(name, Set.of()).contains(dead)) {
+            Set<UUID> remainingBosses = bosses.get(name);
+            if (remainingBosses != null) remainingBosses.remove(dead);
+            if (remainingBosses != null && !remainingBosses.isEmpty()) {
+                for (Player p : event.getEntity().getWorld().getPlayers())
+                    msg(p, "¡Un jefe derrotado! Quedan " + remainingBosses.size() + ".");
+                return;
+            }
             bosses.remove(name);
             if (!finishing.add(name)) return;
             World world = event.getEntity().getWorld();
