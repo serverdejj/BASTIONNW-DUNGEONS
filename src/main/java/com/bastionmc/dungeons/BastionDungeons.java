@@ -499,21 +499,72 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             failPreparation(team, name, new IllegalStateException("Se desconectó " + member.getName()));
             return;
         }
-        getLogger().info("Teletransportando " + member.getName() + " a " + name + " (async)");
-        member.teleportAsync(spawn.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN)
-                .whenComplete((accepted, error) -> Bukkit.getScheduler().runTask(this, () -> {
-                    if (error != null || !Boolean.TRUE.equals(accepted)) {
-                        failPreparation(team, name, new IllegalStateException(
-                                "Teletransporte rechazado para " + member.getName()
-                                + ". Revisa los eventos de teletransporte cancelados en la consola.", error));
-                        return;
-                    }
-                    returns.put(member.getUniqueId(), originals.get(member.getUniqueId()));
-                    playingWorld.put(member.getUniqueId(), name);
-                    clearLobbyEffects(member);
-                    frozen.add(member.getUniqueId());
-                    teleportNext(team, index + 1, spawn, name, world, clipboard, pasteAt, originals);
-                }));
+        getLogger().info("Teletransportando " + member.getName() + " a " + name + " (async, destino="
+                + spawn.getBlockX() + "," + spawn.getBlockY() + "," + spawn.getBlockZ() + ")");
+        // Dejar que FAWE termine de enviar las actualizaciones de chunks antes de viajar.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!member.isOnline() || Bukkit.getWorld(name) == null) {
+                failPreparation(team, name, new IllegalStateException("Jugador desconectado o mundo descargado antes del teleport"));
+                return;
+            }
+            member.teleportAsync(spawn.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN)
+                    .whenComplete((accepted, error) -> Bukkit.getScheduler().runTask(this, () -> {
+                        if (error != null) {
+                            failPreparation(team, name, new IllegalStateException("Error en teleportAsync para " + member.getName(), error));
+                            return;
+                        }
+                        if (Boolean.TRUE.equals(accepted) && member.getWorld().getName().equals(name)) {
+                            completeDungeonTeleport(team, index, spawn, name, world, clipboard, pasteAt, originals);
+                            return;
+                        }
+                        getLogger().warning("teleportAsync devolvio " + accepted + " para " + member.getName()
+                                + "; mundo actual=" + member.getWorld().getName() + ". Probando teleport sincrono una vez.");
+                        // Reintento controlado: Bukkit.teleport puede revelar cancelaciones que teleportAsync oculta.
+                        Bukkit.getScheduler().runTaskLater(this, () -> {
+                            if (!member.isOnline() || Bukkit.getWorld(name) == null) {
+                                failPreparation(team, name, new IllegalStateException("Jugador o mundo ya no disponible"));
+                                return;
+                            }
+                            boolean syncAccepted;
+                            try {
+                                syncAccepted = member.teleport(spawn.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN);
+                            } catch (Exception ex) {
+                                failPreparation(team, name, new IllegalStateException("Excepcion en teleport sincrono de " + member.getName(), ex));
+                                return;
+                            }
+                            getLogger().info("Reintento teleport: aceptado=" + syncAccepted
+                                    + ", mundoActual=" + member.getWorld().getName() + ", esperado=" + name);
+                            if (!syncAccepted || !member.getWorld().getName().equals(name)) {
+                                failPreparation(team, name, new IllegalStateException(
+                                        "Teletransporte rechazado para " + member.getName()
+                                        + ". Verifica advertencias de PlayerTeleportEvent en consola y plugins de proteccion."));
+                                return;
+                            }
+                            completeDungeonTeleport(team, index, spawn, name, world, clipboard, pasteAt, originals);
+                        }, 10L);
+                    }));
+        }, 20L);
+    }
+
+    private void completeDungeonTeleport(List<Player> team, int index, Location spawn, String name,
+                                         World world, Clipboard clipboard, BlockVector3 pasteAt,
+                                         Map<UUID, Location> originals) {
+        Player member = team.get(index);
+        returns.put(member.getUniqueId(), originals.get(member.getUniqueId()));
+        playingWorld.put(member.getUniqueId(), name);
+        clearLobbyEffects(member);
+        frozen.add(member.getUniqueId());
+        teleportNext(team, index + 1, spawn, name, world, clipboard, pasteAt, originals);
+    }
+
+    // Diagnostico de teleports: registrar todos los intentos a mundos temporales.
+    @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
+    public void onDungeonTeleportStart(PlayerTeleportEvent event) {
+        if (event.getTo() == null || event.getTo().getWorld() == null) return;
+        if (instanceWorlds.contains(event.getTo().getWorld().getName())) {
+            getLogger().info("Teleport EVENTO INICIO: jugador=" + event.getPlayer().getName()
+                    + ", causa=" + event.getCause() + ", cancelado=" + event.isCancelled());
+        }
     }
 
     // Registrar cancelaciones externas sin modificar el evento ni atribuirlas a un plugin sin pruebas.
@@ -521,8 +572,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     public void onDungeonTeleportDiagnostic(PlayerTeleportEvent event) {
         if (event.getTo() == null || event.getTo().getWorld() == null) return;
         String worldName = event.getTo().getWorld().getName();
-        if (instanceWorlds.contains(worldName) && event.isCancelled()) {
-            getLogger().warning("Teleport CANCELADO: jugador=" + event.getPlayer().getName()
+        if (instanceWorlds.contains(worldName)) {
+            getLogger().warning("Teleport EVENTO FINAL (cancelado=" + event.isCancelled() + ") : jugador=" + event.getPlayer().getName()
                     + ", mundo=" + worldName + ", causa=" + event.getCause()
                     + ", desde=" + event.getFrom().getWorld().getName());
         }
