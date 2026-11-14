@@ -1,0 +1,8 @@
+# SchemFlow necesita su propio almacenamiento S3/MinIO configurado.
+# Publica cada mapa con saveSelectionAsMap / saveRegionAsMap.
+# El mapa debe conservar las coordenadas de la version anterior (paste-at-origin).
+schemflow:
+  group: default
+  paste-at-origin: true
+  maps:
+    bohemiancastle_schem: bohemiancastle

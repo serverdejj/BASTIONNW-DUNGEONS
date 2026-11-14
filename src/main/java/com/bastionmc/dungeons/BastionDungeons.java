@@ -72,6 +72,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<UUID> preparing = new HashSet<>();
     private final Set<String> finishing = new HashSet<>();
     private final Set<String> cleanupQueued = new HashSet<>();
+    private final Set<String> schemFlowWorlds = new HashSet<>();
     private final Set<String> announcedMissing = new HashSet<>();
     private static final long CLOSED_MS = 30L * 60_000L;
     private static final long OPEN_MS = 5L * 60_000L;
@@ -88,12 +89,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
+        saveDefaultConfig();
+        if (!getServer().getPluginManager().isPluginEnabled("SchemFlow")) {
+            getLogger().severe("SchemFlow no esta habilitado. Instala SchemFlow y configura su almacenamiento S3/MinIO.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
         new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.10-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.18-dev (SchemFlow) listo.");
     }
 
     private void loadSchedule() {
@@ -422,55 +429,63 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }.runTaskTimer(this, 0L, 20L);
     }
 
-    // Carga asincrona de chunks: nunca usar getChunkAt() en un bucle en el hilo principal.
+    // SchemFlow se encarga de crear, pegar, iluminar y devolver el mundo terminado.
+    // La API de provisionRoundWorld trabaja con mapas publicados en el grupo S3/MinIO.
+    // Conservamos el .schem local para los limites, spawns y logica de combate.
     private void start(List<Player> team, File file) throws Exception {
         if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs"))
             throw new IllegalStateException("MythicMobs no esta habilitado");
         String name = "bd_" + UUID.randomUUID().toString().substring(0, 8);
-        World world = new WorldCreator(name).environment(World.Environment.NORMAL)
-                .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
-        if (world == null) throw new IllegalStateException("No se pudo crear mundo");
-        instanceWorlds.add(name);
+        var format = ClipboardFormats.findByFile(file);
+        if (format == null) throw new IOException("Formato schematic desconocido: " + file.getName());
+        Clipboard clipboard;
+        try (ClipboardReader reader = format.getReader(new FileInputStream(file))) { clipboard = reader.read(); }
+        String group = getConfig().getString("schemflow.group", "default");
+        String key = "schemflow.maps." + file.getName().replace('.', '_');
+        String schematic = getConfig().getString(key, file.getName().replaceFirst("(?i)\\.schem$", ""));
+        boolean pasteAtOrigin = getConfig().getBoolean("schemflow.paste-at-origin", true);
+        getLogger().info("SchemFlow preparando " + name + " desde " + group + ":" + schematic);
+        CompletableFuture<?> provision;
         try {
-            var format = ClipboardFormats.findByFile(file);
-            if (format == null) throw new IOException("Formato schematic desconocido");
-            Clipboard clipboard;
-            try (ClipboardReader reader = format.getReader(new FileInputStream(file))) { clipboard = reader.read(); }
-            BlockVector3 pasteAt = BlockVector3.at(0, 100, 0);
-            BlockVector3 min = clipboard.getMinimumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
-            BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
-            int minCx = min.x() >> 4, maxCx = max.x() >> 4;
-            int minCz = min.z() >> 4, maxCz = max.z() >> 4;
-            List<int[]> chunks = new ArrayList<>();
-            for (int cx = minCx; cx <= maxCx; cx++)
-                for (int cz = minCz; cz <= maxCz; cz++) chunks.add(new int[]{cx, cz});
-            if (chunks.size() > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunks.size() + " chunks (limite 256)");
-            getLogger().info("Preparando mazmorra " + name + " con " + file.getName() + " (" + chunks.size() + " chunks asincronos)");
-            for (Player p : team) if (p.isOnline()) msg(p, "Preparando el mundo de la mazmorra, espera un momento...");
-            loadChunksBatch(world, chunks, 0, () -> {
+            Object plugin = Class.forName("com.c4g7.schemflow.SchemFlowPlugin")
+                    .getMethod("getInstance").invoke(null);
+            Object provider = plugin.getClass().getMethod("getProvisioner").invoke(plugin);
+            provision = (CompletableFuture<?>) provider.getClass()
+                    .getMethod("provisionRoundWorld", String.class, String.class, String.class, boolean.class, Map.class)
+                    .invoke(provider, name, group, schematic, pasteAtOrigin, null);
+        } catch (ReflectiveOperationException ex) {
+            throw new IllegalStateException("SchemFlow no expone provisionRoundWorld; revisa su version", ex);
+        }
+        // Registrar antes de completar: el mundo pertenece a esta partida y debe limpiarse.
+        instanceWorlds.add(name);
+        schemFlowWorlds.add(name);
+        provision.whenComplete((created, error) -> {
+            if (!isEnabled()) return;
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (error != null) {
+                    failPreparation(team, name, new IllegalStateException(
+                            "SchemFlow no pudo provisionar " + group + ":" + schematic
+                            + ". Verifica que el mapa este publicado en S3/MinIO", error));
+                    return;
+                }
                 try {
-                    if (team.stream().noneMatch(Player::isOnline))
-                        throw new IllegalStateException("Todos los jugadores se desconectaron");
-                    try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
-                        Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
-                                .to(pasteAt).ignoreAirBlocks(false).build());
-                    }
+                    if (!(created instanceof World world))
+                        throw new IllegalStateException("SchemFlow no devolvio un mundo Bukkit");
+                    // El mapa debe haberse exportado conservando las coordenadas originales.
+                    BlockVector3 pasteAt = BlockVector3.at(0, PASTE_Y, 0);
                     Location spawn = configuredSpawn(world, file.getName());
                     if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
-                    if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
+                    if (spawn == null) throw new IllegalStateException(
+                            "No hay spawn seguro. Reexporta el mapa conservando coordenadas o revisa spawns.yml");
                     world.setSpawnLocation(spawn);
                     schematicNames.put(name, file.getName());
                     teamSizes.put(name, team.size());
                     enemies.put(name, new HashSet<>());
                     entryPoints.put(name, spawn.clone());
-                    // No bloquear el hilo principal ni asumir que un teleport síncrono es aceptado.
-                    // El resultado de teleportAsync permite detectar cancelaciones y fallos reales.
                     teleportTeam(team, spawn, name, world, clipboard, pasteAt);
                 } catch (Exception ex) { failPreparation(team, name, ex); }
-            }, ex -> failPreparation(team, name, ex));
-        } catch (Exception ex) {
-            failPreparation(team, name, ex);
-        }
+            });
+        });
     }
 
     private void teleportTeam(List<Player> team, Location spawn, String name, World world,
@@ -671,26 +686,51 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void queueWorldCleanup(String name) {
         if (!cleanupQueued.add(name)) return;
-        // Esperar a que todos salgan y el mundo se descargue antes de borrar archivos.
         new org.bukkit.scheduler.BukkitRunnable() {
             int attempts = 0;
             @Override public void run() {
                 World world = Bukkit.getWorld(name);
                 if (world != null && !world.getPlayers().isEmpty()) {
-                    if (++attempts >= 20) { getLogger().warning("No se pudo limpiar " + name + ": jugadores presentes"); cleanupQueued.remove(name); cancel(); }
+                    if (++attempts >= 30) {
+                        getLogger().warning("No se puede borrar " + name + ": aun hay jugadores");
+                        cleanupQueued.remove(name); cancel();
+                    }
                     return;
                 }
-                if (world != null && !Bukkit.unloadWorld(world, false)) {
-                    if (++attempts >= 20) { getLogger().warning("No se pudo descargar " + name); cleanupQueued.remove(name); cancel(); }
-                    return;
-                }
-                try {
-                    File folder = new File(Bukkit.getWorldContainer(), name);
-                    if (folder.isDirectory()) deleteTree(folder.toPath());
-                } catch (IOException ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo borrar mundo " + name, ex); }
-                cleanupQueued.remove(name); cancel();
+                cancel();
+                // Dejar terminar las actualizaciones de FAWE/SchemFlow antes de descargar.
+                Bukkit.getScheduler().runTaskLater(BastionDungeons.this, () -> disposeSchemFlowWorld(name), 60L);
             }
         }.runTaskTimer(this, 200L, 20L);
+    }
+
+    private void disposeSchemFlowWorld(String name) {
+        if (!name.matches("bd_[0-9a-f]{8}") || !schemFlowWorlds.contains(name)) {
+            cleanupQueued.remove(name); return;
+        }
+        World world = Bukkit.getWorld(name);
+        if (world != null && !world.getPlayers().isEmpty()) {
+            getLogger().warning("Limpieza aplazada, jugadores presentes en " + name);
+            cleanupQueued.remove(name); queueWorldCleanup(name); return;
+        }
+        try {
+            Object plugin = Class.forName("com.c4g7.schemflow.SchemFlowPlugin")
+                    .getMethod("getInstance").invoke(null);
+            Object provider = plugin.getClass().getMethod("getProvisioner").invoke(plugin);
+            CompletableFuture<?> future = (CompletableFuture<?>) provider.getClass()
+                    .getMethod("disposeWorld", String.class).invoke(provider, name);
+            future.whenComplete((result, error) -> {
+                if (error != null) getLogger().log(java.util.logging.Level.SEVERE,
+                        "SchemFlow no pudo borrar " + name + "; revisa manualmente", error);
+                else getLogger().info("SchemFlow elimino mundo temporal " + name);
+                schemFlowWorlds.remove(name);
+                cleanupQueued.remove(name);
+            });
+        } catch (ReflectiveOperationException ex) {
+            getLogger().log(java.util.logging.Level.SEVERE,
+                    "No se pudo invocar disposeWorld; mundo " + name + " requiere limpieza manual", ex);
+            cleanupQueued.remove(name);
+        }
     }
 
     private void deleteTree(java.nio.file.Path root) throws IOException {

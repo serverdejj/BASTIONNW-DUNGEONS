@@ -1,10 +1,10 @@
 name: BastionDungeons
-version: 1.2.16-dev
+version: 1.2.18-dev
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
 description: Partidas privadas y mazmorras schematic (prototipo)
-depend: [WorldEdit]
+depend: [WorldEdit, SchemFlow]
 softdepend: [MythicMobs]
 commands:
   dungeon:
