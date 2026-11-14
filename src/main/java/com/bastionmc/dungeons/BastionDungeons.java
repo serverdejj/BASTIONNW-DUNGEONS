@@ -80,6 +80,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private static final int MAX_ACTIVE = 3;
     private static final int PASTE_Y = 100;
     private final File spawnFile = new File(getDataFolder(), "spawns.yml");
+    private final File mobSpawnFile = new File(getDataFolder(), "mobspawns.yml");
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
@@ -88,7 +89,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.8-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.9-dev listo.");
     }
 
     private void loadSchedule() {
@@ -191,7 +192,34 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
         UUID id = p.getUniqueId();
-        if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave | /dungeon setspawn"); return true; }
+        if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave | /dungeon setspawn | /dungeon setmobspawn | /dungeon clearmobspawns"); return true; }
+        if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
+            if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
+            String instance = playingWorld.get(id);
+            if (instance == null || !instance.equals(p.getWorld().getName()) || !schematicNames.containsKey(instance)) {
+                msg(p, "Entra primero a una mazmorra activa."); return true;
+            }
+            String key = schematicNames.get(instance).replace('.', '_');
+            var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(mobSpawnFile);
+            String path = "mobspawns." + key;
+            if (args[0].equalsIgnoreCase("clearmobspawns")) {
+                cfg.set(path, null);
+                try { cfg.save(mobSpawnFile); msg(p, "Puntos de enemigos eliminados para este mapa. Usara el spawn aleatorio."); }
+                catch (IOException ex) { msg(p, "No se pudieron guardar los cambios."); getLogger().warning(ex.getMessage()); }
+                return true;
+            }
+            Location l = p.getLocation();
+            if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) {
+                msg(p, "Busca suelo firme con dos bloques libres encima."); return true;
+            }
+            List<String> points = new ArrayList<>(cfg.getStringList(path));
+            String value = l.getX() + "," + (l.getY() - PASTE_Y) + "," + l.getZ();
+            if (!points.contains(value)) points.add(value);
+            cfg.set(path, points);
+            try { cfg.save(mobSpawnFile); msg(p, "Punto de enemigos #" + points.size() + " guardado para " + schematicNames.get(instance) + "."); }
+            catch (IOException ex) { msg(p, "No se pudo guardar el punto."); getLogger().warning(ex.getMessage()); }
+            return true;
+        }
         if (args[0].equalsIgnoreCase("setspawn")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
             String worldName = playingWorld.get(id);
@@ -290,7 +318,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡Todo Listo!" + org.bukkit.ChatColor.WHITE
                             + ", Enviándote a la mazmorra");
                     for (Player member : team) {
-                        member.sendTitle(hex("#D2A5FF") + "" + ChatColor.BOLD + "Entrando a Dungeons",
+                        member.sendTitle(ChatColor.WHITE + "☠ " + hex("#9640FC") + ChatColor.BOLD + "INICIANDO MAZMORRA " + ChatColor.RESET + ChatColor.WHITE + "☠",
                                 "", 0, 40, 10);
                     }
                     try { start(team, file); }
@@ -532,7 +560,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (name.isEmpty()) return;
         var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
         double max = maxHealth == null ? mob.getHealth() : maxHealth.getValue();
-        long hp = Math.max(0L, (long) Math.ceil(mob.getHealth()));
+        if ("SkeletonKing".equals(mobType)) max += 176;
+        long hp = Math.max(0L, (long) Math.ceil(mob.getHealth() + mob.getAbsorptionAmount()));
         long total = Math.max(1L, (long) Math.ceil(max));
         mob.setCustomName(name + ChatColor.GRAY + " | " + ChatColor.RED + "❤ " + hp + "/" + total);
         mob.setCustomNameVisible(true);
@@ -740,6 +769,35 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return world.getPlayers().stream().filter(p -> p.getGameMode() != GameMode.SPECTATOR).toList();
     }
 
+    // Si el schematic tiene puntos configurados, usarlos; si no, conservar el spawn original.
+    private Location enemySpawnLocation(World world, Location near) {
+        String schematic = schematicNames.get(world.getName());
+        if (schematic == null) return nearbySafeLocation(world, near, 5, 8);
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(mobSpawnFile);
+        List<String> points = cfg.getStringList("mobspawns." + schematic.replace('.', '_'));
+        if (points.isEmpty()) return nearbySafeLocation(world, near, 5, 8);
+        List<Location> safe = new ArrayList<>();
+        for (String raw : points) {
+            try {
+                String[] xyz = raw.split(",");
+                Location loc = new Location(world, Double.parseDouble(xyz[0]), Double.parseDouble(xyz[1]) + PASTE_Y, Double.parseDouble(xyz[2]));
+                if (isSafe(world, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) safe.add(loc);
+            } catch (RuntimeException ex) { getLogger().warning("Punto de mob invalido: " + raw); }
+        }
+        return safe.isEmpty() ? null : safe.get(random.nextInt(safe.size()));
+    }
+
+    private void setEnemyHealth(LivingEntity mob, double hp) {
+        var attribute = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+        if (attribute != null) {
+            // El limite vanilla de MAX_HEALTH es 1024; el resto del jefe se maneja con absorcion.
+            double base = Math.min(hp, 1024.0);
+            attribute.setBaseValue(base);
+            mob.setHealth(base);
+            if (hp > base) mob.setAbsorptionAmount(hp - base);
+        }
+    }
+
     private void spawnNextMobs(World world) {
         String name = world.getName();
         if (!instanceWorlds.contains(name) || bossCountdownStarted.containsKey(name)) return;
@@ -750,11 +808,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         int attempts = 0;
         while (active.size() < MAX_ACTIVE && totalSpawned.getOrDefault(name, 0) < TOTAL_MOBS && attempts++ < 25) {
             Player target = players.get(random.nextInt(players.size()));
-            Location loc = nearbySafeLocation(world, target.getLocation(), 5, 8);
+            Location loc = enemySpawnLocation(world, target.getLocation());
             if (loc == null) continue;
             try {
                 String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
                 LivingEntity mob = spawnMythic(mobId, loc);
+                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 120 : 300);
                 active.add(mob.getUniqueId());
                 enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
@@ -790,7 +849,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (mob.getLocation().distanceSquared(closest.getLocation()) > 20 * 20) {
                     int ticks = lostTicks.merge(mobId, 1, Integer::sum);
                     if (ticks >= 2) {
-                        Location loc = nearbySafeLocation(world, closest.getLocation(), 5, 8);
+                        Location loc = enemySpawnLocation(world, closest.getLocation());
                         if (loc != null) mob.teleport(loc);
                         lostTicks.remove(mobId);
                     }
@@ -830,7 +889,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = world.getName();
         List<Player> players = fighters(world);
         if (players.isEmpty()) return;
-        Location loc = nearbySafeLocation(world, players.get(0).getLocation(), 5, 8);
+        Location loc = enemySpawnLocation(world, players.get(0).getLocation());
         if (loc == null) {
             getLogger().warning("No hay lugar para SkeletonKing en " + name);
             for (Player p : players) msg(p, "No hay lugar para el jefe. Revisa consola.");
@@ -838,9 +897,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         try {
             LivingEntity boss = spawnMythic("SkeletonKing", loc);
-            double hp = switch (teamSizes.getOrDefault(name, 1)) { case 1 -> 100; case 2 -> 150; case 3 -> 200; default -> 250; };
-            var attribute = boss.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
-            if (attribute != null) { attribute.setBaseValue(hp); boss.setHealth(hp); }
+            setEnemyHealth(boss, 1200);
             bosses.put(name, boss.getUniqueId());
             updateEnemyName(boss, "SkeletonKing");
             for (Player p : world.getPlayers()) p.sendMessage(hex("#FF0000") + "" + ChatColor.BOLD + "JEFE ESQUELETO " + ChatColor.DARK_GRAY + "» " + ChatColor.WHITE + "¡Ha aparecido el " + hex("#FD9696") + "Jefe Final" + ChatColor.WHITE + "!.");
