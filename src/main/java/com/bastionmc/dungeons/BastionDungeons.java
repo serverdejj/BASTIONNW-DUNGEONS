@@ -35,6 +35,7 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
@@ -462,23 +463,68 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     teamSizes.put(name, team.size());
                     enemies.put(name, new HashSet<>());
                     entryPoints.put(name, spawn.clone());
-                    for (Player member : team) {
-                        if (!member.isOnline()) continue;
-                        Location original = member.getLocation().clone();
-                        if (!member.teleport(spawn))
-                            throw new IllegalStateException("Teletransporte rechazado para " + member.getName());
-                        returns.put(member.getUniqueId(), original);
-                        playingWorld.put(member.getUniqueId(), name);
-                        clearLobbyEffects(member);
-                        frozen.add(member.getUniqueId());
-                    }
-                    getLogger().info("Mazmorra " + name + " creada y jugadores teletransportados correctamente");
-                    startCountdown(world, clipboard, pasteAt, team.size());
-                    for (Player member : team) preparing.remove(member.getUniqueId());
+                    // No bloquear el hilo principal ni asumir que un teleport síncrono es aceptado.
+                    // El resultado de teleportAsync permite detectar cancelaciones y fallos reales.
+                    teleportTeam(team, spawn, name, world, clipboard, pasteAt);
                 } catch (Exception ex) { failPreparation(team, name, ex); }
             }, ex -> failPreparation(team, name, ex));
         } catch (Exception ex) {
             failPreparation(team, name, ex);
+        }
+    }
+
+    private void teleportTeam(List<Player> team, Location spawn, String name, World world,
+                              Clipboard clipboard, BlockVector3 pasteAt) {
+        List<Player> online = team.stream().filter(Player::isOnline).toList();
+        if (online.isEmpty()) {
+            failPreparation(team, name, new IllegalStateException("No quedan jugadores conectados"));
+            return;
+        }
+        Map<UUID, Location> originals = new HashMap<>();
+        for (Player p : online) originals.put(p.getUniqueId(), p.getLocation().clone());
+        teleportNext(online, 0, spawn, name, world, clipboard, pasteAt, originals);
+    }
+
+    private void teleportNext(List<Player> team, int index, Location spawn, String name,
+                              World world, Clipboard clipboard, BlockVector3 pasteAt,
+                              Map<UUID, Location> originals) {
+        if (index >= team.size()) {
+            getLogger().info("Mazmorra " + name + " creada y equipo teletransportado correctamente");
+            for (Player member : team) preparing.remove(member.getUniqueId());
+            startCountdown(world, clipboard, pasteAt, team.size());
+            return;
+        }
+        Player member = team.get(index);
+        if (!member.isOnline()) {
+            failPreparation(team, name, new IllegalStateException("Se desconectó " + member.getName()));
+            return;
+        }
+        getLogger().info("Teletransportando " + member.getName() + " a " + name + " (async)");
+        member.teleportAsync(spawn.clone(), PlayerTeleportEvent.TeleportCause.PLUGIN)
+                .whenComplete((accepted, error) -> Bukkit.getScheduler().runTask(this, () -> {
+                    if (error != null || !Boolean.TRUE.equals(accepted)) {
+                        failPreparation(team, name, new IllegalStateException(
+                                "Teletransporte rechazado para " + member.getName()
+                                + ". Revisa los eventos de teletransporte cancelados en la consola.", error));
+                        return;
+                    }
+                    returns.put(member.getUniqueId(), originals.get(member.getUniqueId()));
+                    playingWorld.put(member.getUniqueId(), name);
+                    clearLobbyEffects(member);
+                    frozen.add(member.getUniqueId());
+                    teleportNext(team, index + 1, spawn, name, world, clipboard, pasteAt, originals);
+                }));
+    }
+
+    // Registrar cancelaciones externas sin modificar el evento ni atribuirlas a un plugin sin pruebas.
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = false)
+    public void onDungeonTeleportDiagnostic(PlayerTeleportEvent event) {
+        if (event.getTo() == null || event.getTo().getWorld() == null) return;
+        String worldName = event.getTo().getWorld().getName();
+        if (instanceWorlds.contains(worldName) && event.isCancelled()) {
+            getLogger().warning("Teleport CANCELADO: jugador=" + event.getPlayer().getName()
+                    + ", mundo=" + worldName + ", causa=" + event.getCause()
+                    + ", desde=" + event.getFrom().getWorld().getName());
         }
     }
 
@@ -593,7 +639,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 } catch (IOException ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo borrar mundo " + name, ex); }
                 cleanupQueued.remove(name); cancel();
             }
-        }.runTaskTimer(this, 40L, 20L);
+        }.runTaskTimer(this, 200L, 20L);
     }
 
     private void deleteTree(java.nio.file.Path root) throws IOException {
