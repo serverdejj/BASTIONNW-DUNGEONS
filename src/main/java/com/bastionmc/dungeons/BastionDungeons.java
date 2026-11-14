@@ -408,15 +408,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                                 "", 0, 40, 10);
                     }
                     try { start(team, file); }
-                    catch (Exception ex) {
-                        getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
-                        for (Player p : team) {
-                            if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
-                            if (p.isOnline()) clearLobbyEffects(p);
-                            if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
-                        }
-                        saveSchedule();
-                    } finally { for (Player p : team) preparing.remove(p.getUniqueId()); }
+                    catch (Exception ex) { failPreparation(team, null, ex); }
                     cancel(); return;
                 }
                 for (Player p : team) {
@@ -429,11 +421,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }.runTaskTimer(this, 0L, 20L);
     }
 
+    // Carga asincrona de chunks: nunca usar getChunkAt() en un bucle en el hilo principal.
     private void start(List<Player> team, File file) throws Exception {
         if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs"))
             throw new IllegalStateException("MythicMobs no esta habilitado");
         String name = "bd_" + UUID.randomUUID().toString().substring(0, 8);
-        // Generador propio: los mundos de mazmorra no requieren DeepVoid.
         World world = new WorldCreator(name).environment(World.Environment.NORMAL)
                 .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
         if (world == null) throw new IllegalStateException("No se pudo crear mundo");
@@ -448,51 +440,81 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
             int minCx = min.x() >> 4, maxCx = max.x() >> 4;
             int minCz = min.z() >> 4, maxCz = max.z() >> 4;
-            long chunkCount = (long) (maxCx - minCx + 1) * (maxCz - minCz + 1);
-            if (chunkCount > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunkCount + " chunks (limite 256)");
-            // Cargar los chunks y pegar el schematic directamente en el hilo principal.
-            // No depender de generadores externos ni de callbacks asincronos.
-            getLogger().info("Preparando mazmorra " + name + " con " + file.getName() + " (" + chunkCount + " chunks)");
-            for (int cx = minCx; cx <= maxCx; cx++) {
-                for (int cz = minCz; cz <= maxCz; cz++) {
-                    world.getChunkAt(cx, cz).load(true);
-                }
-            }
-            try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
-                Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
-                        .to(pasteAt).ignoreAirBlocks(false).build());
-            }
-            Location spawn = configuredSpawn(world, file.getName());
-            if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
-            if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
-            world.setSpawnLocation(spawn);
-            schematicNames.put(name, file.getName());
-            teamSizes.put(name, team.size());
-            enemies.put(name, new HashSet<>());
-            entryPoints.put(name, spawn.clone());
-            for (Player member : team) {
-                if (!member.isOnline()) continue;
-                Location original = member.getLocation().clone();
-                if (!member.teleport(spawn))
-                    throw new IllegalStateException("Teletransporte rechazado para " + member.getName());
-                returns.put(member.getUniqueId(), original);
-                playingWorld.put(member.getUniqueId(), name);
-                clearLobbyEffects(member);
-                frozen.add(member.getUniqueId());
-            }
-            getLogger().info("Mazmorra " + name + " creada y jugadores teletransportados correctamente");
-            startCountdown(world, clipboard, pasteAt, team.size());
+            List<int[]> chunks = new ArrayList<>();
+            for (int cx = minCx; cx <= maxCx; cx++)
+                for (int cz = minCz; cz <= maxCz; cz++) chunks.add(new int[]{cx, cz});
+            if (chunks.size() > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunks.size() + " chunks (limite 256)");
+            getLogger().info("Preparando mazmorra " + name + " con " + file.getName() + " (" + chunks.size() + " chunks asincronos)");
+            for (Player p : team) if (p.isOnline()) msg(p, "Preparando el mundo de la mazmorra, espera un momento...");
+            loadChunksBatch(world, chunks, 0, () -> {
+                try {
+                    if (team.stream().noneMatch(Player::isOnline))
+                        throw new IllegalStateException("Todos los jugadores se desconectaron");
+                    try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
+                        Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
+                                .to(pasteAt).ignoreAirBlocks(false).build());
+                    }
+                    Location spawn = configuredSpawn(world, file.getName());
+                    if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
+                    if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
+                    world.setSpawnLocation(spawn);
+                    schematicNames.put(name, file.getName());
+                    teamSizes.put(name, team.size());
+                    enemies.put(name, new HashSet<>());
+                    entryPoints.put(name, spawn.clone());
+                    for (Player member : team) {
+                        if (!member.isOnline()) continue;
+                        Location original = member.getLocation().clone();
+                        if (!member.teleport(spawn))
+                            throw new IllegalStateException("Teletransporte rechazado para " + member.getName());
+                        returns.put(member.getUniqueId(), original);
+                        playingWorld.put(member.getUniqueId(), name);
+                        clearLobbyEffects(member);
+                        frozen.add(member.getUniqueId());
+                    }
+                    getLogger().info("Mazmorra " + name + " creada y jugadores teletransportados correctamente");
+                    startCountdown(world, clipboard, pasteAt, team.size());
+                    for (Player member : team) preparing.remove(member.getUniqueId());
+                } catch (Exception ex) { failPreparation(team, name, ex); }
+            }, ex -> failPreparation(team, name, ex));
         } catch (Exception ex) {
-            for (Player member : team) {
-                UUID uuid = member.getUniqueId();
-                if (name.equals(playingWorld.get(uuid))) returnPlayer(member, name);
-                else if (member.isOnline()) clearLobbyEffects(member);
-                enteredThisWindow.remove(uuid);
-            }
-            saveSchedule();
-            finishInstance(name);
-            throw ex;
+            failPreparation(team, name, ex);
         }
+    }
+
+    private void loadChunksBatch(World world, List<int[]> chunks, int offset,
+                                 Runnable success, java.util.function.Consumer<Throwable> failure) {
+        if (!isEnabled()) return;
+        if (offset >= chunks.size()) { success.run(); return; }
+        // Como maximo ocho solicitudes simultaneas para no saturar la generacion de chunks.
+        int end = Math.min(offset + 8, chunks.size());
+        List<CompletableFuture<?>> futures = new ArrayList<>();
+        for (int i = offset; i < end; i++) {
+            int[] pos = chunks.get(i);
+            futures.add(world.getChunkAtAsync(pos[0], pos[1], true));
+        }
+        CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).whenComplete((ignored, error) -> {
+            if (!isEnabled()) return;
+            Bukkit.getScheduler().runTask(this, () -> {
+                if (error != null) { failure.accept(error); return; }
+                if (offset % 32 == 0) getLogger().info("Chunks preparados: " + end + "/" + chunks.size());
+                loadChunksBatch(world, chunks, end, success, failure);
+            });
+        });
+    }
+
+    private void failPreparation(List<Player> team, String name, Throwable ex) {
+        getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon" + (name == null ? "" : " " + name), ex);
+        for (Player member : team) {
+            UUID uuid = member.getUniqueId();
+            preparing.remove(uuid);
+            if (name != null && name.equals(playingWorld.get(uuid))) returnPlayer(member, name);
+            else if (member.isOnline()) clearLobbyEffects(member);
+            enteredThisWindow.remove(uuid);
+            if (member.isOnline()) msg(member, "No se pudo iniciar la mazmorra. Revisa consola.");
+        }
+        saveSchedule();
+        if (name != null) finishInstance(name);
     }
 
     private void cleanupFailedWorld(String name) {
