@@ -64,6 +64,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, Integer> defeated = new HashMap<>();
     private final Map<String, Boolean> bossCountdownStarted = new HashMap<>();
     private final Map<UUID, Integer> lostTicks = new HashMap<>();
+    private final Map<UUID, Location> lastMobPositions = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> trackers = new HashMap<>();
     private final Set<UUID> preparing = new HashSet<>();
     private final Set<String> finishing = new HashSet<>();
@@ -531,9 +532,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!instanceWorlds.contains(name)) return;
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
-        for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); }
+        for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
         UUID boss = bosses.remove(name);
-        if (boss != null) protectedMobs.remove(boss);
+        if (boss != null) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
         enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
         entryPoints.remove(name); schematicNames.remove(name);
         totalSpawned.remove(name); defeated.remove(name); bossCountdownStarted.remove(name);
@@ -622,14 +623,24 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return living;
     }
 
+    private String gradientBold(String word, String[] colors) {
+        StringBuilder result = new StringBuilder();
+        for (int i = 0; i < word.length(); i++)
+            result.append(hex(colors[i])).append(ChatColor.BOLD).append(word.charAt(i));
+        return result.toString();
+    }
+
     // Nombre y vida en una sola linea sobre la cabeza, sin plugins de modelos/hologramas.
     // Usar la salud real del mob (incluidas las modificaciones de MythicMobs).
     private void updateEnemyName(LivingEntity mob, String mobType) {
         if (mob.isDead() || !instanceWorlds.contains(mob.getWorld().getName())) return;
         String name = switch (mobType) {
-            case "SkeletalMinion" -> hex("#D2A5FF") + "" + ChatColor.BOLD + "☠ ESQUELETO MALDITO ☠";
-            case "SkeletalKnight" -> hex("#FFAA55") + "" + ChatColor.BOLD + "⚔ GUARDIÁN ESQUELÉTICO ⚔";
-            case "SkeletonKing" -> hex("#FF3333") + "" + ChatColor.BOLD + "♛ REY ESQUELETO ♛";
+            case "SkeletalMinion" -> ChatColor.DARK_GRAY + "☠ " + ChatColor.WHITE + "Esqueleto " + ChatColor.DARK_GRAY + "· "
+                    + gradientBold("MALDITO", new String[]{"#C080F6", "#C77CF7", "#CF79F7", "#D675F8", "#CF79F7", "#C77CF7", "#C080F6"});
+            case "SkeletalKnight" -> ChatColor.DARK_GRAY + "🗡 " + ChatColor.WHITE + "Guardián " + ChatColor.DARK_GRAY + "· "
+                    + gradientBold("ESQUELETO", new String[]{"#F6BE80", "#F7C27D", "#F7C77B", "#F8CB78", "#F8CF75", "#F8CB78", "#F7C77B", "#F7C27D", "#F6BE80"});
+            case "SkeletonKing" -> ChatColor.DARK_GRAY + "👑 " + ChatColor.WHITE + "Rey " + ChatColor.DARK_GRAY + "· "
+                    + hex("#FF0000") + ChatColor.BOLD + "ESQUELETO";
             default -> "";
         };
         if (name.isEmpty()) return;
@@ -719,7 +730,30 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @EventHandler(ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
-        if (!frozen.contains(event.getPlayer().getUniqueId()) || event.getTo() == null) return;
+        if (event.getTo() == null) return;
+        Player player = event.getPlayer();
+        String instance = playingWorld.get(player.getUniqueId());
+        if (instance != null && instance.equals(player.getWorld().getName())
+                && player.getGameMode() != GameMode.SPECTATOR) {
+            Location center = entryPoints.get(instance);
+            Location destination = event.getTo();
+            if (center != null && destination.getWorld().equals(center.getWorld())) {
+                double dx = destination.getX() - center.getX();
+                double dz = destination.getZ() - center.getZ();
+                if (dx * dx + dz * dz > 33.0 * 33.0) {
+                    // Programar el teleport fuera de PlayerMoveEvent para evitar reentradas.
+                    Bukkit.getScheduler().runTask(this, () -> {
+                        if (instance.equals(playingWorld.get(player.getUniqueId())) && player.isOnline()) {
+                            player.teleport(center.clone());
+                            msg(player, "No puedes alejarte más de 33 bloques del inicio de la mazmorra.");
+                        }
+                    });
+                    event.setTo(event.getFrom());
+                    return;
+                }
+            }
+        }
+        if (!frozen.contains(player.getUniqueId())) return;
         Location from = event.getFrom(), to = event.getTo();
         if (from.getX() != to.getX() || from.getY() != to.getY() || from.getZ() != to.getZ()) {
             Location locked = from.clone();
@@ -902,10 +936,42 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!active.isEmpty()) announcedMissing.remove(name);
     }
 
+    // Persecución continua; si un mob no avanza durante 4 segundos, reaparece cerca del objetivo.
+    private void pursueEnemy(LivingEntity mob, UUID mobId, List<Player> players, World world) {
+        Player closest = players.stream()
+                .min(Comparator.comparingDouble(p -> p.getLocation().distanceSquared(mob.getLocation())))
+                .orElse(null);
+        if (closest == null) return;
+        if (mob instanceof org.bukkit.entity.Mob pathfindingMob) pathfindingMob.setTarget(closest);
+        Location previous = lastMobPositions.put(mobId, mob.getLocation().clone());
+        double distance = mob.getLocation().distanceSquared(closest.getLocation());
+        if (distance < 3.5 * 3.5) { lostTicks.remove(mobId); return; }
+        boolean stuck = previous != null && previous.distanceSquared(mob.getLocation()) < 0.35 * 0.35;
+        // Un mob que queda lejos del área también debe regresar al combate.
+        Location spawn = entryPoints.get(world.getName());
+        boolean escaped = spawn != null && horizontalDistanceSquared(spawn, mob.getLocation()) > 33.0 * 33.0;
+        int stalled = stuck || escaped ? lostTicks.merge(mobId, 1, Integer::sum) : 0;
+        if (!stuck && !escaped) lostTicks.remove(mobId);
+        if (escaped || stalled >= 4) {
+            Location destination = nearbySafeLocation(world, closest.getLocation(), 2, 4);
+            if (destination != null && (spawn == null || horizontalDistanceSquared(spawn, destination) <= 33.0 * 33.0)) {
+                mob.teleport(destination);
+                if (mob instanceof org.bukkit.entity.Mob pathfindingMob) pathfindingMob.setTarget(closest);
+                lastMobPositions.put(mobId, destination.clone());
+                lostTicks.remove(mobId);
+            }
+        }
+    }
+
+    private double horizontalDistanceSquared(Location a, Location b) {
+        double dx = a.getX() - b.getX(), dz = a.getZ() - b.getZ();
+        return dx * dx + dz * dz;
+    }
+
     private void startTracker(World world) {
         String name = world.getName();
         trackers.put(name, Bukkit.getScheduler().runTaskTimer(this, () -> {
-            if (!instanceWorlds.contains(name) || bossCountdownStarted.containsKey(name)) return;
+            if (!instanceWorlds.contains(name) || finishing.contains(name)) return;
             Set<UUID> active = enemies.get(name);
             if (active == null) return;
             List<Player> players = fighters(world);
@@ -913,27 +979,27 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             for (UUID mobId : new ArrayList<>(active)) {
                 Entity entity = Bukkit.getEntity(mobId);
                 if (!(entity instanceof LivingEntity mob) || mob.isDead()) {
-                    // Un enemigo desaparecido no debe bloquear la partida.
-                    active.remove(mobId); protectedMobs.remove(mobId); lostTicks.remove(mobId); enemyTypes.remove(mobId);
+                    active.remove(mobId); protectedMobs.remove(mobId);
+                    lostTicks.remove(mobId); lastMobPositions.remove(mobId); enemyTypes.remove(mobId);
                     defeated.merge(name, 1, Integer::sum);
                     continue;
                 }
                 updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
-                Player closest = players.stream().min(Comparator.comparingDouble(p -> p.getLocation().distanceSquared(mob.getLocation()))).orElse(null);
-                if (closest == null) continue;
-                if (mob.getLocation().distanceSquared(closest.getLocation()) > 20 * 20) {
-                    int ticks = lostTicks.merge(mobId, 1, Integer::sum);
-                    if (ticks >= 2) {
-                        Location loc = enemySpawnLocation(world, closest.getLocation());
-                        if (loc != null) mob.teleport(loc);
-                        lostTicks.remove(mobId);
-                    }
-                } else lostTicks.remove(mobId);
+                pursueEnemy(mob, mobId, players, world);
             }
-            if (defeated.getOrDefault(name, 0) >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(world);
-            else spawnNextMobs(world);
-        }, 40L, 100L));
-
+            UUID bossId = bosses.get(name);
+            if (bossId != null) {
+                Entity entity = Bukkit.getEntity(bossId);
+                if (entity instanceof LivingEntity boss && !boss.isDead()) {
+                    updateEnemyName(boss, "SkeletonKing");
+                    pursueEnemy(boss, bossId, players, world);
+                }
+            }
+            if (!bossCountdownStarted.containsKey(name)) {
+                if (defeated.getOrDefault(name, 0) >= TOTAL_MOBS && active.isEmpty()) startBossCountdown(world);
+                else spawnNextMobs(world);
+            }
+        }, 40L, 20L));
     }
 
     private void startBossCountdown(World world) {
@@ -985,7 +1051,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String deadType = enemyTypes.get(dead);
         if (deadType == null && dead.equals(bosses.get(name))) deadType = "SkeletonKing";
         if (deadType != null) rollLoot(event, deadType);
-        protectedMobs.remove(dead); lostTicks.remove(dead); enemyTypes.remove(dead);
+        protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;
         if (active.remove(dead)) {
