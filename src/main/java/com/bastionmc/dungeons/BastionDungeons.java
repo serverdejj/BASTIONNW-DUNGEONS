@@ -867,6 +867,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @EventHandler(ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
+        // PlayerTeleportEvent hereda de PlayerMoveEvent. No modificar su destino:
+        // la congelacion del lobby puede hacer que Bukkit rechace el teleport.
+        if (event instanceof PlayerTeleportEvent) return;
         if (event.getTo() == null) return;
         Player player = event.getPlayer();
         String instance = playingWorld.get(player.getUniqueId());
