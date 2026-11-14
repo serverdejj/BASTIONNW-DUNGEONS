@@ -245,13 +245,22 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(lootFile);
         var section = cfg.getConfigurationSection("loot." + mob);
         if (section == null) return;
+        java.util.List<org.bukkit.inventory.ItemStack> rewards = new java.util.ArrayList<>();
         for (String key : section.getKeys(false)) {
             String base = "loot." + mob + "." + key;
             org.bukkit.inventory.ItemStack item = cfg.getItemStack(base + ".item");
             double chance = cfg.getDouble(base + ".chance", 0);
             if (item != null && !item.getType().isAir() && chance > 0 && random.nextDouble() * 100 < chance)
-                event.getDrops().add(item.clone());
+                rewards.add(item.clone());
         }
+        if (rewards.isEmpty()) return;
+        // Soltar directamente al siguiente tick: MythicMobs puede modificar los drops del evento.
+        org.bukkit.Location dropAt = event.getEntity().getLocation().clone();
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (dropAt.getWorld() == null) return;
+            for (org.bukkit.inventory.ItemStack reward : rewards)
+                dropAt.getWorld().dropItemNaturally(dropAt, reward);
+        });
     }
 
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
