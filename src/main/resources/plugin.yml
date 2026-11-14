@@ -1,20 +1,17 @@
 name: BastionDungeons
-version: 1.2.19-dev
+version: 1.2.22-dev
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
-description: Partidas privadas y mazmorras schematic (prototipo)
-depend: [WorldEdit]
+description: Mazmorras en mundos permanentes con MythicMobs
 softdepend: [MythicMobs]
 commands:
   dungeon:
-    description: Comandos de party y mazmorra
-    usage: /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
+    description: Parties, mundos, mazmorras y loot
+    usage: /dungeon worlds | setspawn | setmobspawn | clearmobspawns | go | leave | party | loot
     aliases: [dungeons]
 permissions:
   bastiondungeons.use:
     default: true
-
   bastiondungeons.bypass:
-    description: Ignora los horarios de apertura de mazmorras
     default: op

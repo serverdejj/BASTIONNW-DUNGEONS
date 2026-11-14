@@ -1,8 +1,2 @@
-# SchemFlow necesita su propio almacenamiento S3/MinIO configurado.
-# Publica cada mapa con saveSelectionAsMap / saveRegionAsMap.
-# El mapa debe conservar las coordenadas de la version anterior (paste-at-origin).
-schemflow:
-  group: default
-  paste-at-origin: true
-  maps:
-    bohemiancastle_schem: bohemiancastle
+# BASTION DUNGEONS 1.2.22: mundos permanentes en plugins/BastionDungeons/worlds/
+# Los spawns se guardan mediante comandos en spawns.yml y mobspawns.yml.
