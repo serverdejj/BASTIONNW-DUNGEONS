@@ -1,5 +1,14 @@
 package com.bastionmc.dungeons;
 
+import com.sk89q.worldedit.EditSession;
+import com.sk89q.worldedit.WorldEdit;
+import com.sk89q.worldedit.bukkit.BukkitAdapter;
+import com.sk89q.worldedit.extent.clipboard.Clipboard;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardFormats;
+import com.sk89q.worldedit.extent.clipboard.io.ClipboardReader;
+import com.sk89q.worldedit.function.operation.Operations;
+import com.sk89q.worldedit.math.BlockVector3;
+import com.sk89q.worldedit.session.ClipboardHolder;
 import org.bukkit.*;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
@@ -26,11 +35,11 @@ import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
 import org.bukkit.event.player.PlayerMoveEvent;
-import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Entity;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.generator.ChunkGenerator;
 import org.bukkit.plugin.java.JavaPlugin;
 import java.io.*;
 import java.util.*;
@@ -53,7 +62,6 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<UUID> protectedMobs = new HashSet<>();
     private final Map<String, Location> entryPoints = new HashMap<>();
     private final Map<String, String> schematicNames = new HashMap<>();
-    private final Set<String> managedWorlds = new HashSet<>();
     private final Map<String, Integer> totalSpawned = new HashMap<>();
     private final Map<String, Integer> defeated = new HashMap<>();
     private final Map<String, Boolean> bossCountdownStarted = new HashMap<>();
@@ -72,19 +80,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<UUID> enteredThisWindow = new HashSet<>();
     private final File scheduleFile = new File(getDataFolder(), "schedule.yml");
     // Rondas: 10 por jugador, 12 por jugador, y 1-2 jefes.
+    private static final int PASTE_Y = 100;
     private final File spawnFile = new File(getDataFolder(), "spawns.yml");
     private final File mobSpawnFile = new File(getDataFolder(), "mobspawns.yml");
     private final File lootFile = new File(getDataFolder(), "loot.yml");
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
-        new File(getDataFolder(), "worlds").mkdirs();
-        loadManagedWorlds();
+        new File(getDataFolder(), "schematics").mkdirs();
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.22 listo (mundos permanentes, sin teleports).");
+        getLogger().info("Bastion Dungeons 1.2.10-dev listo.");
     }
 
     private void loadSchedule() {
@@ -149,10 +157,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
     private long lastAnnouncedOpen = -1L;
 
-    @Override public void onDisable() {
-        saveSchedule();
-        for (String name : new HashSet<>(instanceWorlds)) finishInstance(name);
-    }
+    @Override public void onDisable() { saveSchedule(); }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
     private List<Player> members(UUID leader) {
@@ -268,43 +273,51 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         UUID id = p.getUniqueId();
         if (args.length == 0) { msg(p,"/dungeon party add <jugador> | accept | leave | list | /dungeon go | /dungeon leave | /dungeon setspawn | /dungeon setmobspawn | /dungeon clearmobspawns"); return true; }
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
-        if (args[0].equalsIgnoreCase("worlds")) {
-            msg(p, "Mundos disponibles: " + (managedWorlds.isEmpty() ? "ninguno" : String.join(", ", managedWorlds)));
-            return true;
-        }
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
-            String worldName = p.getWorld().getName();
-            if (!managedWorlds.contains(worldName)) { msg(p, "Debes estar en un mundo de plugins/BastionDungeons/worlds/."); return true; }
-            var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(mobSpawnFile);
-            String path = "mobspawns." + worldName;
-            if (args[0].equalsIgnoreCase("clearmobspawns")) cfg.set(path, null);
-            else {
-                Location l = p.getLocation();
-                if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) {
-                    msg(p, "Busca suelo firme con dos bloques libres encima."); return true;
-                }
-                List<String> points = new ArrayList<>(cfg.getStringList(path));
-                String value = l.getX() + "," + l.getY() + "," + l.getZ();
-                if (!points.contains(value)) points.add(value);
-                cfg.set(path, points);
+            String instance = playingWorld.get(id);
+            if (instance == null || !instance.equals(p.getWorld().getName()) || !schematicNames.containsKey(instance)) {
+                msg(p, "Entra primero a una mazmorra activa."); return true;
             }
-            try { cfg.save(mobSpawnFile); msg(p, "Puntos de enemigos actualizados para " + worldName + "."); }
-            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando mobspawns", ex); msg(p, "Error guardando puntos."); }
+            String key = schematicNames.get(instance).replace('.', '_');
+            var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(mobSpawnFile);
+            String path = "mobspawns." + key;
+            if (args[0].equalsIgnoreCase("clearmobspawns")) {
+                cfg.set(path, null);
+                try { cfg.save(mobSpawnFile); msg(p, "Puntos de enemigos eliminados para este mapa. Usara el spawn aleatorio."); }
+                catch (IOException ex) { msg(p, "No se pudieron guardar los cambios."); getLogger().warning(ex.getMessage()); }
+                return true;
+            }
+            Location l = p.getLocation();
+            if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) {
+                msg(p, "Busca suelo firme con dos bloques libres encima."); return true;
+            }
+            List<String> points = new ArrayList<>(cfg.getStringList(path));
+            String value = l.getX() + "," + (l.getY() - PASTE_Y) + "," + l.getZ();
+            if (!points.contains(value)) points.add(value);
+            cfg.set(path, points);
+            try { cfg.save(mobSpawnFile); msg(p, "Punto de enemigos #" + points.size() + " guardado para " + schematicNames.get(instance) + "."); }
+            catch (IOException ex) { msg(p, "No se pudo guardar el punto."); getLogger().warning(ex.getMessage()); }
             return true;
         }
         if (args[0].equalsIgnoreCase("setspawn")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
-            String worldName = p.getWorld().getName();
-            if (!managedWorlds.contains(worldName)) { msg(p, "Debes estar en un mundo de mazmorras cargado."); return true; }
+            String worldName = playingWorld.get(id);
+            if (worldName == null || !worldName.equals(p.getWorld().getName()) || !schematicNames.containsKey(worldName)) {
+                msg(p, "Entra primero a una mazmorra activa."); return true;
+            }
             Location l = p.getLocation();
-            if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) { msg(p, "Busca suelo firme con dos bloques libres encima."); return true; }
-            var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(spawnFile);
-            String base = "spawns." + worldName;
-            cfg.set(base + ".x", l.getX()); cfg.set(base + ".y", l.getY()); cfg.set(base + ".z", l.getZ());
-            cfg.set(base + ".yaw", (double) l.getYaw()); cfg.set(base + ".pitch", (double) l.getPitch());
-            try { cfg.save(spawnFile); p.getWorld().setSpawnLocation(l); msg(p, "Punto fijo guardado para " + worldName + "."); }
-            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando spawn", ex); msg(p, "Error guardando spawn."); }
+            if (!isSafe(l.getWorld(), l.getBlockX(), l.getBlockY(), l.getBlockZ())) {
+                msg(p, "Busca suelo firme con dos bloques libres encima."); return true;
+            }
+            String key = schematicNames.get(worldName);
+            org.bukkit.configuration.file.YamlConfiguration cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(spawnFile);
+            String base = "spawns." + key.replace('.', '_');
+            cfg.set(base + ".x", l.getX()); cfg.set(base + ".y", l.getY() - PASTE_Y);
+            cfg.set(base + ".z", l.getZ()); cfg.set(base + ".yaw", (double) l.getYaw());
+            cfg.set(base + ".pitch", (double) l.getPitch());
+            try { cfg.save(spawnFile); msg(p, "Spawn guardado para " + key + ". Se usara en las proximas partidas."); }
+            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "No se pudo guardar spawn", ex); msg(p, "Error guardando spawn."); }
             return true;
         }
         if (args[0].equalsIgnoreCase("party")) {
@@ -353,23 +366,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             List<Player> team = members(id);
             if (team.stream().anyMatch(q -> !canJoin(q))) { msg(p, "Algún miembro no tiene acceso a esta apertura."); return true; }
             if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()) || preparing.contains(q.getUniqueId()))) { msg(p,"Alguien ya esta en partida."); return true; }
-            String worldName = p.getWorld().getName();
-            if (!managedWorlds.contains(worldName)) { msg(p, "Entra primero al mundo de la mazmorra. No se hacen teletransportes automaticos."); return true; }
-            if (instanceWorlds.contains(worldName)) { msg(p, "Ya hay una partida activa en este mundo."); return true; }
-            if (team.stream().anyMatch(q -> !q.getWorld().getName().equals(worldName))) {
-                msg(p, "Todos los integrantes deben estar dentro del mismo mundo de mazmorra."); return true;
-            }
-            if (configuredSpawn(p.getWorld(), worldName) == null) { msg(p, "Configura primero /dungeon setspawn en este mundo."); return true; }
+            File folder = new File(getDataFolder(), "schematics");
+            File[] schems = folder.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".schem"));
+            if (schems == null || schems.length == 0) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
+            File chosen = schems[new Random().nextInt(schems.length)];
             // Reservar la entrada al iniciar la cuenta atrás para evitar partidas duplicadas.
             for (Player member : team) if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
             saveSchedule();
-            beginLobbyCountdown(team, worldName);
+            beginLobbyCountdown(team, chosen);
             return true;
         }
         msg(p,"Comando desconocido."); return true;
     }
 
-    private void beginLobbyCountdown(List<Player> team, String worldName) {
+    private void beginLobbyCountdown(List<Player> team, File file) {
         for (Player member : team) { preparing.add(member.getUniqueId()); beginLobbyEffects(member); }
         for (Player member : team) colored(member,
                 net.md_5.bungee.api.ChatColor.of("#D2A5FF") + "¡Prepárate!" + org.bukkit.ChatColor.WHITE
@@ -378,7 +388,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         new org.bukkit.scheduler.BukkitRunnable() {
             int remaining = 5;
             @Override public void run() {
-                boolean valid = team.stream().allMatch(p -> p.isOnline() && preparing.contains(p.getUniqueId()) && p.getWorld().getName().equals(worldName));
+                boolean valid = team.stream().allMatch(p -> p.isOnline() && preparing.contains(p.getUniqueId()));
                 if (!valid) {
                     for (Player p : team) {
                         preparing.remove(p.getUniqueId());
@@ -392,13 +402,23 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (remaining == 0) {
                     for (Player member : team) colored(member,
                             net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡Todo Listo!" + org.bukkit.ChatColor.WHITE
-                            + ", Iniciando combate en este mundo");
+                            + ", Enviándote a la mazmorra");
                     for (Player member : team) {
                         member.sendTitle(ChatColor.WHITE + "☠ " + hex("#9640FC") + ChatColor.BOLD + "INICIANDO MAZMORRA " + ChatColor.RESET + ChatColor.WHITE + "☠",
                                 "", 0, 40, 10);
+                        // Efecto de terror al mostrar el título de inicio (una sola vez por jugador).
+                        member.playSound(member.getLocation(), Sound.ENTITY_WARDEN_ROAR, 0.75f, 0.85f);
                     }
-                    try { start(team, worldName); }
-                    catch (Exception ex) { failPreparation(team, null, ex); }
+                    try { start(team, file); }
+                    catch (Exception ex) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon", ex);
+                        for (Player p : team) {
+                            if (!playingWorld.containsKey(p.getUniqueId())) enteredThisWindow.remove(p.getUniqueId());
+                            if (p.isOnline()) clearLobbyEffects(p);
+                            if (p.isOnline()) msg(p, "No se pudo iniciar la mazmorra. Revisa consola.");
+                        }
+                        saveSchedule();
+                    } finally { for (Player p : team) preparing.remove(p.getUniqueId()); }
                     cancel(); return;
                 }
                 for (Player p : team) {
@@ -411,77 +431,77 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }.runTaskTimer(this, 0L, 20L);
     }
 
-    // Mundos permanentes: el administrador coloca un mapa en worlds/<nombre>/.
-    // Bukkit necesita la carpeta de mundo en el contenedor principal. Preferimos un enlace
-    // simbolico para que los datos vivan realmente en plugins/BastionDungeons/worlds/.
-    // Si el hosting prohibe enlaces, no se copia ni modifica el mapa: se informa el error.
-    private void loadManagedWorlds() {
-        File base = new File(getDataFolder(), "worlds");
-        File[] folders = base.listFiles(File::isDirectory);
-        if (folders == null) return;
-        for (File folder : folders) {
-            String name = folder.getName();
-            if (!name.matches("[A-Za-z0-9_-]{1,48}") || !new File(folder, "level.dat").isFile()) {
-                getLogger().warning("Mapa omitido (nombre invalido o falta level.dat): " + name); continue;
-            }
-            try {
-                java.nio.file.Path source = folder.toPath().toRealPath();
-                java.nio.file.Path link = new File(Bukkit.getWorldContainer(), name).toPath();
-                if (java.nio.file.Files.exists(link, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
-                    if (!java.nio.file.Files.isSymbolicLink(link) || !java.nio.file.Files.readSymbolicLink(link).toAbsolutePath().normalize().equals(source)) {
-                        getLogger().warning("No se carga " + name + ": ya existe otra carpeta con ese nombre en la raiz del servidor.");
-                        continue;
-                    }
-                } else java.nio.file.Files.createSymbolicLink(link, source);
-                World world = Bukkit.getWorld(name);
-                if (world == null) world = new WorldCreator(name).createWorld();
-                if (world == null) throw new IOException("Bukkit no pudo cargar el mundo");
-                managedWorlds.add(name);
-                getLogger().info("Mundo permanente listo: " + name);
-            } catch (Exception ex) {
-                getLogger().log(java.util.logging.Level.SEVERE, "No se pudo cargar " + name + ". El hosting debe permitir enlaces simbolicos.", ex);
-            }
-        }
-    }
-
-    private void start(List<Player> team, String name) {
-        World world = Bukkit.getWorld(name);
-        if (world == null || !managedWorlds.contains(name)) throw new IllegalStateException("Mundo no cargado: " + name);
-        if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs")) throw new IllegalStateException("MythicMobs no esta habilitado");
-        Location spawn = configuredSpawn(world, name);
-        if (spawn == null) throw new IllegalStateException("Punto fijo no configurado o inseguro en " + name);
-        if (instanceWorlds.contains(name)) throw new IllegalStateException("Ya existe una partida activa en " + name);
-        if (team.stream().anyMatch(p -> !p.isOnline() || !p.getWorld().equals(world))) throw new IllegalStateException("Equipo fuera del mundo");
+    private void start(List<Player> team, File file) throws Exception {
+        if (!Bukkit.getPluginManager().isPluginEnabled("MythicMobs"))
+            throw new IllegalStateException("MythicMobs no esta habilitado");
+        String name = "bd_" + UUID.randomUUID().toString().substring(0, 8);
+        World world = new WorldCreator(name).environment(World.Environment.NORMAL)
+                .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
+        if (world == null) throw new IllegalStateException("No se pudo crear mundo");
         instanceWorlds.add(name);
-        schematicNames.put(name, name);
-        teamSizes.put(name, team.size());
-        enemies.put(name, new HashSet<>());
-        entryPoints.put(name, spawn.clone());
-        for (Player member : team) {
-            preparing.remove(member.getUniqueId());
-            playingWorld.put(member.getUniqueId(), name);
-            clearLobbyEffects(member);
-            frozen.add(member.getUniqueId());
+        try {
+            var format = ClipboardFormats.findByFile(file);
+            if (format == null) throw new IOException("Formato schematic desconocido");
+            Clipboard clipboard;
+            try (ClipboardReader reader = format.getReader(new FileInputStream(file))) { clipboard = reader.read(); }
+            BlockVector3 pasteAt = BlockVector3.at(0, 100, 0);
+            BlockVector3 min = clipboard.getMinimumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+            BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+            int minCx = min.x() >> 4, maxCx = max.x() >> 4;
+            int minCz = min.z() >> 4, maxCz = max.z() >> 4;
+            long chunkCount = (long) (maxCx - minCx + 1) * (maxCz - minCz + 1);
+            if (chunkCount > 256) throw new IllegalArgumentException("Schematic demasiado grande: " + chunkCount + " chunks (limite 256)");
+            // Cargar chunks de manera asincrona antes de ejecutar el pegado.
+            // La API de WorldEdit se ejecuta en el hilo del servidor; no se hacen llamadas Bukkit asincronas.
+            List<CompletableFuture<Chunk>> loads = new ArrayList<>();
+            for (int cx = minCx; cx <= maxCx; cx++) for (int cz = minCz; cz <= maxCz; cz++)
+                loads.add(world.getChunkAtAsync(cx, cz, true));
+            // Preparación silenciosa: los jugadores ven oscuridad y cuenta regresiva.
+            CompletableFuture.allOf(loads.toArray(new CompletableFuture[0])).whenComplete((ignored, failure) ->
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (!instanceWorlds.contains(name)) return;
+                    if (failure != null) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error cargando chunks", failure);
+                        cleanupFailedWorld(name);
+                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "No se pudo preparar la mazmorra."); }
+                        return;
+                    }
+                    try {
+                        try (EditSession edit = WorldEdit.getInstance().newEditSession(BukkitAdapter.adapt(world))) {
+                            Operations.complete(new ClipboardHolder(clipboard).createPaste(edit)
+                                    .to(pasteAt).ignoreAirBlocks(false).build());
+                        }
+                        Location spawn = configuredSpawn(world, file.getName());
+                        if (spawn == null) spawn = safeRandomLocation(world, clipboard, pasteAt);
+                        if (spawn == null) throw new IllegalStateException("El schematic no tiene suelo seguro para iniciar");
+                        world.setSpawnLocation(spawn);
+                        for (Player member : team) {
+                            if (!member.isOnline()) continue;
+                            returns.put(member.getUniqueId(), member.getLocation().clone());
+                            playingWorld.put(member.getUniqueId(), name);
+                            member.teleport(spawn);
+                            clearLobbyEffects(member);
+                            frozen.add(member.getUniqueId());
+                        }
+                        schematicNames.put(name, file.getName());
+                        teamSizes.put(name, team.size());
+                        enemies.put(name, new HashSet<>());
+                        entryPoints.put(name, spawn.clone());
+                        startCountdown(world, clipboard, pasteAt, team.size());
+                    } catch (Exception ex) {
+                        getLogger().log(java.util.logging.Level.SEVERE, "Error pegando schematic", ex);
+                        cleanupFailedWorld(name);
+                        for (Player member : team) if (member.isOnline()) { clearLobbyEffects(member); msg(member, "Error creando mazmorra; revisa consola."); }
+                    }
+                }));
+        } catch (Exception ex) {
+            cleanupFailedWorld(name);
+            throw ex;
         }
-        startCountdown(world, team.size());
-    }
-
-    private void failPreparation(List<Player> team, String name, Throwable ex) {
-        getLogger().log(java.util.logging.Level.SEVERE, "Error creando dungeon" + (name == null ? "" : " " + name), ex);
-        for (Player member : team) {
-            UUID uuid = member.getUniqueId();
-            preparing.remove(uuid);
-            if (name != null && name.equals(playingWorld.get(uuid))) returnPlayer(member, name);
-            else if (member.isOnline()) clearLobbyEffects(member);
-            enteredThisWindow.remove(uuid);
-            if (member.isOnline()) msg(member, "No se pudo iniciar la mazmorra. Revisa consola.");
-        }
-        saveSchedule();
-        if (name != null) finishInstance(name);
     }
 
     private void cleanupFailedWorld(String name) {
-        // El mundo es permanente: nunca se descarga ni se borra.
+        queueWorldCleanup(name);
     }
 
     private void leave(Player p) {
@@ -500,9 +520,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         UUID id = p.getUniqueId();
         clearLobbyEffects(p);
         playingWorld.remove(id);
-        returns.remove(id);
+        Location back = returns.remove(id);
         if (p.isOnline()) {
             p.setGameMode(GameMode.SURVIVAL);
+            if (back != null) p.teleport(back);
         }
     }
 
@@ -523,20 +544,48 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!instanceWorlds.contains(name)) return;
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
-        for (UUID mob : enemies.getOrDefault(name, Set.of())) { Entity entity = Bukkit.getEntity(mob); if (entity != null) entity.remove(); protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); enemyTypes.remove(mob); }
-        for (UUID boss : bosses.getOrDefault(name, Set.of())) { Entity entity = Bukkit.getEntity(boss); if (entity != null) entity.remove(); protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
+        for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
+        for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
         bosses.remove(name); rounds.remove(name); roundTransitioning.remove(name);
-        enemies.remove(name); teamSizes.remove(name);
+        enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
         entryPoints.remove(name); schematicNames.remove(name);
         totalSpawned.remove(name); defeated.remove(name); bossCountdownStarted.remove(name);
         finishing.remove(name); announcedMissing.remove(name);
         instanceWorlds.remove(name);
-        for (UUID id : new HashSet<>(playingWorld.keySet())) if (name.equals(playingWorld.get(id))) {
-            Player player = Bukkit.getPlayer(id);
-            if (player != null) { clearLobbyEffects(player); player.setGameMode(GameMode.SURVIVAL); }
-            playingWorld.remove(id); returns.remove(id);
+        queueWorldCleanup(name);
+    }
+
+    private void queueWorldCleanup(String name) {
+        if (!cleanupQueued.add(name)) return;
+        // Esperar a que todos salgan y el mundo se descargue antes de borrar archivos.
+        new org.bukkit.scheduler.BukkitRunnable() {
+            int attempts = 0;
+            @Override public void run() {
+                World world = Bukkit.getWorld(name);
+                if (world != null && !world.getPlayers().isEmpty()) {
+                    if (++attempts >= 20) { getLogger().warning("No se pudo limpiar " + name + ": jugadores presentes"); cleanupQueued.remove(name); cancel(); }
+                    return;
+                }
+                if (world != null && !Bukkit.unloadWorld(world, false)) {
+                    if (++attempts >= 20) { getLogger().warning("No se pudo descargar " + name); cleanupQueued.remove(name); cancel(); }
+                    return;
+                }
+                try {
+                    File folder = new File(Bukkit.getWorldContainer(), name);
+                    if (folder.isDirectory()) deleteTree(folder.toPath());
+                } catch (IOException ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo borrar mundo " + name, ex); }
+                cleanupQueued.remove(name); cancel();
+            }
+        }.runTaskTimer(this, 40L, 20L);
+    }
+
+    private void deleteTree(java.nio.file.Path root) throws IOException {
+        // Solo se llama para mundos temporales bd_... creados por este plugin.
+        if (!root.getFileName().toString().matches("bd_[0-9a-f]{8}")) throw new IOException("Nombre de mundo no permitido");
+        try (var paths = java.nio.file.Files.walk(root)) {
+            for (java.nio.file.Path path : paths.sorted(Comparator.reverseOrder()).toList())
+                java.nio.file.Files.deleteIfExists(path);
         }
-        // El mundo es permanente: nunca se descarga ni se borra.
     }
 
     @EventHandler public void onDeath(PlayerDeathEvent e) {
@@ -693,9 +742,6 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @EventHandler(ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
-        // PlayerTeleportEvent hereda de PlayerMoveEvent. No modificar su destino:
-        // la congelacion del lobby puede hacer que Bukkit rechace el teleport.
-        if (event instanceof PlayerTeleportEvent) return;
         if (event.getTo() == null) return;
         Player player = event.getPlayer();
         String instance = playingWorld.get(player.getUniqueId());
@@ -710,6 +756,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     // Programar el teleport fuera de PlayerMoveEvent para evitar reentradas.
                     Bukkit.getScheduler().runTask(this, () -> {
                         if (instance.equals(playingWorld.get(player.getUniqueId())) && player.isOnline()) {
+                            player.teleport(center.clone());
                             msg(player, "No puedes alejarte más de 33 bloques del inicio de la mazmorra.");
                         }
                     });
@@ -727,7 +774,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
-    private void startCountdown(World world, int partySize) {
+    private void startCountdown(World world, Clipboard clipboard, BlockVector3 pasteAt, int partySize) {
         String name = world.getName();
         new org.bukkit.scheduler.BukkitRunnable() {
             int remaining = 5;
@@ -739,6 +786,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         player.sendTitle(ChatColor.GREEN + "¡A LUCHAR!", ChatColor.YELLOW + "¡Derrota a los enemigos!", 0, 35, 10);
                         player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.65f, 1.5f);
                     }
+                    bossAreas.put(name, new BossArea(clipboard, pasteAt));
                     totalSpawned.put(name, 0); defeated.put(name, 0); rounds.put(name, 1);
                     spawnNextMobs(world);
                     startTracker(world);
@@ -778,6 +826,38 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return null;
     }
 
+    private Location safeRandomLocation(World world, Clipboard clipboard, BlockVector3 pasteAt) {
+        BlockVector3 min = clipboard.getMinimumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+        BlockVector3 max = clipboard.getMaximumPoint().subtract(clipboard.getOrigin()).add(pasteAt);
+        int xMin = min.x(), xMax = max.x();
+        int yMin = Math.max(world.getMinHeight() + 2, min.y());
+        int yMax = Math.min(world.getMaxHeight() - 3, max.y());
+        int zMin = min.z(), zMax = max.z();
+        if (xMin > xMax || yMin > yMax || zMin > zMax) return null;
+        // Elegir columnas X/Z y recorrer sus alturas: evita la baja probabilidad
+        // de acertar con una superficie al elegir Y completamente al azar.
+        for (int i = 0; i < 300; i++) {
+            int x = xMin + random.nextInt(xMax - xMin + 1);
+            int z = zMin + random.nextInt(zMax - zMin + 1);
+            List<Integer> candidates = new ArrayList<>();
+            for (int y = yMin; y <= yMax; y++) {
+                var floor = world.getBlockAt(x, y - 1, z);
+                var feet = world.getBlockAt(x, y, z);
+                var head = world.getBlockAt(x, y + 1, z);
+                if (!floor.getType().isSolid() || !feet.isPassable() || !head.isPassable()) continue;
+                if (floor.isLiquid() || feet.isLiquid() || head.isLiquid()) continue;
+                String floorName = floor.getType().name();
+                if (floorName.contains("LEAVES") || floorName.contains("MAGMA") || floorName.contains("CACTUS")) continue;
+                candidates.add(y);
+            }
+            if (candidates.isEmpty()) continue;
+            int y = candidates.get(random.nextInt(candidates.size()));
+            Location loc = new Location(world, x + .5, y, z + .5);
+            if (world.getNearbyEntities(loc, 3, 3, 3).stream().noneMatch(e -> e instanceof Player)) return loc;
+        }
+        return null;
+    }
+
     private boolean isSafe(World world, int x, int y, int z) {
         if (world == null || y <= world.getMinHeight() + 1 || y >= world.getMaxHeight() - 2) return false;
         var floor = world.getBlockAt(x, y - 1, z);
@@ -789,17 +869,25 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return !type.contains("LEAVES") && !type.contains("MAGMA") && !type.contains("CACTUS");
     }
 
-    private Location configuredSpawn(World world, String worldName) {
+    private Location configuredSpawn(World world, String schematic) {
         var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(spawnFile);
-        String base = "spawns." + worldName;
+        String base = "spawns." + schematic.replace('.', '_');
         if (!cfg.contains(base + ".x")) return null;
-        Location loc = new Location(world, cfg.getDouble(base + ".x"), cfg.getDouble(base + ".y"),
-                cfg.getDouble(base + ".z"), (float) cfg.getDouble(base + ".yaw"), (float) cfg.getDouble(base + ".pitch"));
-        return isSafe(world, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ()) ? loc : null;
+        Location loc = new Location(world, cfg.getDouble(base + ".x"),
+                cfg.getDouble(base + ".y") + PASTE_Y, cfg.getDouble(base + ".z"),
+                (float) cfg.getDouble(base + ".yaw"), (float) cfg.getDouble(base + ".pitch"));
+        if (!isSafe(world, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+            getLogger().warning("Spawn guardado inseguro para " + schematic + "; usando spawn automatico.");
+            return null;
+        }
+        return loc;
     }
 
+    private record BossArea(Clipboard clipboard, BlockVector3 pasteAt) {}
+    private final Map<String, BossArea> bossAreas = new HashMap<>();
+
     private List<Player> fighters(World world) {
-        return world.getPlayers().stream().filter(p -> playingWorld.getOrDefault(p.getUniqueId(), "").equals(world.getName()) && p.getGameMode() != GameMode.SPECTATOR).toList();
+        return world.getPlayers().stream().filter(p -> p.getGameMode() != GameMode.SPECTATOR).toList();
     }
 
     // Si el schematic tiene puntos configurados, usarlos; si no, conservar el spawn original.
@@ -813,7 +901,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         for (String raw : points) {
             try {
                 String[] xyz = raw.split(",");
-                Location loc = new Location(world, Double.parseDouble(xyz[0]), Double.parseDouble(xyz[1]), Double.parseDouble(xyz[2]));
+                Location loc = new Location(world, Double.parseDouble(xyz[0]), Double.parseDouble(xyz[1]) + PASTE_Y, Double.parseDouble(xyz[2]));
                 if (isSafe(world, loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) safe.add(loc);
             } catch (RuntimeException ex) { getLogger().warning("Punto de mob invalido: " + raw); }
         }
@@ -1036,7 +1124,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 partyMessage(p, ChatColor.GOLD + "¡VICTORIA!");
                 p.sendMessage(ChatColor.WHITE + "Tienes " + ChatColor.GOLD + "10 segundos" + ChatColor.WHITE
                         + " para recoger tus recompensas.");
-                p.sendMessage(ChatColor.GRAY + "La partida terminara aqui, sin teletransporte.");
+                p.sendMessage(ChatColor.GRAY + "Después regresarás automáticamente al spawn.");
             }
             new org.bukkit.scheduler.BukkitRunnable() {
                 int seconds = 10;
@@ -1045,7 +1133,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     for (Player p : winners) {
                         if (p.isOnline() && name.equals(playingWorld.get(p.getUniqueId()))) {
                             p.sendActionBar(ChatColor.GOLD + "✦ RECOGE TUS RECOMPENSAS ✦ "
-                                    + ChatColor.WHITE + "Finalizando en " + seconds + "s...");
+                                    + ChatColor.WHITE + "Regresando al spawn en " + seconds + "s...");
                         }
                     }
                     if (--seconds < 0) cancel();
