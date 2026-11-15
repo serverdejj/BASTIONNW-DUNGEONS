@@ -538,22 +538,56 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
-    private void returnPlayer(Player p, String name) {
-        UUID id = p.getUniqueId();
-        clearLobbyEffects(p);
-        Location back = returns.get(id);
-        if (p.isOnline() && back != null) {
-            prepareNametagTravel(p, true);
-            // No borrar la sesión si Paper rechaza el teletransporte.
-            if (!p.teleport(back)) {
-                getLogger().warning("No se pudo regresar a " + p.getName() + " desde " + name + ". Mundo conservado.");
-                msg(p, "No se pudo regresar al Spawn. Contacta a un administrador.");
-                return;
-            }
-            p.setGameMode(GameMode.SURVIVAL);
+    // La lista de participantes no depende de world.getPlayers(): un jugador
+    // puede estar muerto, reapareciendo o en modo espectador al finalizar.
+    private List<Player> onlineParticipants(String name) {
+        List<Player> result = new ArrayList<>();
+        for (var entry : playingWorld.entrySet()) {
+            if (!name.equals(entry.getValue())) continue;
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player != null && player.isOnline()) result.add(player);
         }
+        return result;
+    }
+
+    private void returnAllParticipants(String name) {
+        for (Player player : onlineParticipants(name)) returnPlayer(player, name);
+        // Un teletransporte fallido conserva la sesión; no destruir el mundo.
+        finishInstance(name);
+    }
+
+    private void returnPlayer(Player p, String name) {
+        returnPlayer(p, name, 0);
+    }
+
+    private void returnPlayer(Player p, String name, int attempt) {
+        UUID id = p.getUniqueId();
+        if (!name.equals(playingWorld.get(id))) return;
+        if (!p.isOnline()) return; // conservar sesión hasta que se gestione la desconexión
+        Location back = returns.get(id);
+        if (back == null || back.getWorld() == null) {
+            getLogger().warning("Falta ubicación de retorno para " + p.getName() + " en " + name);
+            return;
+        }
+        clearLobbyEffects(p);
+        prepareNametagTravel(p, true);
+        // Un espectador puede estar siguiendo a otra entidad.
+        if (p.getGameMode() == GameMode.SPECTATOR) p.setSpectatorTarget(null);
+        if (!p.teleport(back)) {
+            if (attempt < 5) {
+                Bukkit.getScheduler().runTaskLater(this, () -> returnPlayer(p, name, attempt + 1), 20L);
+            } else {
+                getLogger().warning("No se pudo regresar a " + p.getName() + " desde " + name + " tras 6 intentos. Mundo conservado.");
+                msg(p, "No se pudo regresar al Spawn. Contacta a un administrador.");
+            }
+            return;
+        }
+        p.setGameMode(GameMode.SURVIVAL);
+        frozen.remove(id);
         playingWorld.remove(id);
         returns.remove(id);
+        // La limpieza se intenta otra vez cuando termine el último retorno.
+        if (finishing.contains(name)) finishInstance(name);
     }
 
     private void releaseParty(String name) {
@@ -633,13 +667,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (world == null || finishing.contains(worldName) || !instanceWorlds.contains(worldName)) return;
                 if (!world.getPlayers().isEmpty() && fighters(world).isEmpty()) {
                     finishing.add(worldName);
-                    List<Player> losers = new ArrayList<>(world.getPlayers());
+                    List<Player> losers = onlineParticipants(worldName);
                     releaseParty(worldName);
                     for (Player player : losers) msg(player, "¡DERROTA! Regresando al lobby en 5 segundos...");
                     Bukkit.getScheduler().runTaskLater(this, () -> {
-                        for (Player player : losers)
-                            if (worldName.equals(playingWorld.get(player.getUniqueId()))) returnPlayer(player, worldName);
-                        finishInstance(worldName);
+                        returnAllParticipants(worldName);
                     }, 100L);
                 }
             }, 40L);
@@ -649,7 +681,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = playingWorld.get(e.getPlayer().getUniqueId());
         if (name != null && Bukkit.getWorld(name) != null) {
             e.setRespawnLocation(Bukkit.getWorld(name).getSpawnLocation());
-            Bukkit.getScheduler().runTask(this, () -> e.getPlayer().setGameMode(GameMode.SPECTATOR));
+            Bukkit.getScheduler().runTask(this, () -> {
+                // No devolver a Espectador si ya salió mientras reaparecía.
+                if (name.equals(playingWorld.get(e.getPlayer().getUniqueId())))
+                    e.getPlayer().setGameMode(GameMode.SPECTATOR);
+            });
         }
     }
     // MythicMobs API is invoked reflectively to avoid requiring a paid API artifact
@@ -1148,7 +1184,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             bosses.remove(name);
             if (!finishing.add(name)) return;
             World world = event.getEntity().getWorld();
-            List<Player> winners = new ArrayList<>(world.getPlayers());
+            List<Player> winners = onlineParticipants(name);
             releaseParty(name);
             for (Player p : winners) {
                 frozen.remove(p.getUniqueId());
@@ -1174,10 +1210,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 }
             }.runTaskTimer(this, 0L, 20L);
             Bukkit.getScheduler().runTaskLater(this, () -> {
-                for (Player p : winners) {
-                    if (name.equals(playingWorld.get(p.getUniqueId()))) returnPlayer(p, name);
-                }
-                finishInstance(name);
+                returnAllParticipants(name);
             }, 200L);
         }
     }
