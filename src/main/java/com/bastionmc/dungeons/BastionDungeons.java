@@ -479,6 +479,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             if (!member.isOnline()) continue;
                             returns.put(member.getUniqueId(), member.getLocation().clone());
                             playingWorld.put(member.getUniqueId(), name);
+                            prepareNametagTravel(member, false);
                             member.teleport(spawn);
                             clearLobbyEffects(member);
                             frozen.add(member.getUniqueId());
@@ -516,15 +517,43 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         msg(p, "Saliste de la mazmorra.");
     }
 
+    // Retirar el pasajero ANTES del teletransporte. La llamada opcional a
+    // NameTangs impide que su actualizador vuelva a montarlo mientras viajamos.
+    private void prepareNametagTravel(Player player, boolean dungeonExit) {
+        if (dungeonExit) {
+            org.bukkit.plugin.Plugin plugin = Bukkit.getPluginManager().getPlugin("BastionMCNameTangs");
+            if (plugin != null && plugin.isEnabled()) {
+                try {
+                    plugin.getClass().getMethod("prepareDungeonReturn", Player.class).invoke(plugin, player);
+                } catch (ReflectiveOperationException ex) {
+                    getLogger().warning("NameTangs sin API de salida 1.0.10: " + ex.getClass().getSimpleName());
+                }
+            }
+        }
+        for (org.bukkit.entity.Entity passenger : new ArrayList<>(player.getPassengers())) {
+            if (passenger.getScoreboardTags().contains("bastionmc_nametangs_label")) {
+                player.removePassenger(passenger);
+                passenger.remove();
+            }
+        }
+    }
+
     private void returnPlayer(Player p, String name) {
         UUID id = p.getUniqueId();
         clearLobbyEffects(p);
-        playingWorld.remove(id);
-        Location back = returns.remove(id);
-        if (p.isOnline()) {
+        Location back = returns.get(id);
+        if (p.isOnline() && back != null) {
+            prepareNametagTravel(p, true);
+            // No borrar la sesión si Paper rechaza el teletransporte.
+            if (!p.teleport(back)) {
+                getLogger().warning("No se pudo regresar a " + p.getName() + " desde " + name + ". Mundo conservado.");
+                msg(p, "No se pudo regresar al Spawn. Contacta a un administrador.");
+                return;
+            }
             p.setGameMode(GameMode.SURVIVAL);
-            if (back != null) p.teleport(back);
         }
+        playingWorld.remove(id);
+        returns.remove(id);
     }
 
     private void releaseParty(String name) {
@@ -542,6 +571,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void finishInstance(String name) {
         if (!instanceWorlds.contains(name)) return;
+        World occupied = Bukkit.getWorld(name);
+        if (occupied != null && !occupied.getPlayers().isEmpty()) {
+            getLogger().warning("No se limpiará " + name + ": todavía hay jugadores dentro.");
+            return;
+        }
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }

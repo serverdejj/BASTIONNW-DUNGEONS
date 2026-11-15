@@ -1,0 +1,9 @@
+BASTION DUNGEONS 1.2.13-dev - compatibilidad con NameTangs 1.0.10
+
+- Desmonta el nametag antes del teletransporte de entrada y de regreso.
+- Llama a prepareDungeonReturn() en NameTangs antes de regresar al Spawn.
+- No elimina la sesión si el teletransporte de regreso devuelve false.
+- No limpia un mundo mientras tenga jugadores dentro.
+
+Instala ambos plugins actualizados; haz respaldo de los JAR actuales.
+Fuentes no compiladas ni probadas en Purpur.
