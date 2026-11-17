@@ -72,6 +72,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<UUID, UUID> invites = new HashMap<>();
     private final Map<UUID, Location> returns = new HashMap<>();
     private final Map<UUID, String> playingWorld = new HashMap<>();
+    private final Set<UUID> awaitingDungeonRespawn = new HashSet<>();
     private final Set<String> instanceWorlds = new HashSet<>();
     private final Map<String, Set<UUID>> enemies = new HashMap<>();
     private final Map<UUID, String> enemyTypes = new HashMap<>();
@@ -797,6 +798,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private void returnPlayer(Player p, String name, int attempt) {
         UUID id = p.getUniqueId();
         if (!name.equals(playingWorld.get(id))) return;
+        // Nunca sacar a un jugador muerto antes de que reaparezca y termine su espera.
+        if (awaitingDungeonRespawn.contains(id)) return;
         if (!p.isOnline()) return; // conservar sesión hasta que se gestione la desconexión
         Location back = returns.get(id);
         if (back == null || back.getWorld() == null) {
@@ -824,6 +827,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         p.setGameMode(GameMode.SURVIVAL);
         frozen.remove(id);
         playingWorld.remove(id);
+        awaitingDungeonRespawn.remove(id);
         returns.remove(id);
         // La restauración se repite después de que finalicen los eventos de
         // teletransporte/respawn. Solo fuera de una partida y en el destino
@@ -912,6 +916,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @EventHandler public void onDeath(PlayerDeathEvent e) {
         if (playingWorld.containsKey(e.getEntity().getUniqueId())) {
+            awaitingDungeonRespawn.add(e.getEntity().getUniqueId());
             e.setKeepInventory(false);
             e.setKeepLevel(false);
             // Los objetos caen al suelo para que los compañeros puedan recuperarlos.
@@ -925,7 +930,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     releaseParty(worldName);
                     for (Player player : losers) msg(player, "¡DERROTA! Regresando al lobby en 5 segundos...");
                     Bukkit.getScheduler().runTaskLater(this, () -> {
-                        returnAllParticipants(worldName);
+                        // Los muertos esperan cinco segundos DESDE su respawn individual.
+                        // Los vivos pueden salir cuando finaliza la espera de derrota.
+                        for (Player player : onlineParticipants(worldName)) {
+                            if (!awaitingDungeonRespawn.contains(player.getUniqueId()))
+                                returnPlayer(player, worldName);
+                        }
+                        finishInstance(worldName);
                     }, 100L);
                 }
             }, 40L);
@@ -935,10 +946,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = playingWorld.get(e.getPlayer().getUniqueId());
         if (name != null && Bukkit.getWorld(name) != null) {
             e.setRespawnLocation(Bukkit.getWorld(name).getSpawnLocation());
+            UUID id = e.getPlayer().getUniqueId();
             Bukkit.getScheduler().runTask(this, () -> {
-                // No devolver a Espectador si ya salió mientras reaparecía.
-                if (name.equals(playingWorld.get(e.getPlayer().getUniqueId())))
-                    e.getPlayer().setGameMode(GameMode.SPECTATOR);
+                Player player = Bukkit.getPlayer(id);
+                if (player == null || !player.isOnline() || !name.equals(playingWorld.get(id))) return;
+                player.setGameMode(GameMode.SPECTATOR);
+                // Iniciar el tiempo desde el respawn real, no desde PlayerDeathEvent.
+                player.sendMessage(ChatColor.GRAY + "Regresando al spawn en 5 segundos...");
+                Bukkit.getScheduler().runTaskLater(this, () -> {
+                    if (!name.equals(playingWorld.get(id))) return;
+                    awaitingDungeonRespawn.remove(id);
+                    if (player.isOnline()) returnPlayer(player, name);
+                }, 100L);
             });
         }
     }
@@ -1534,6 +1553,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         VoteSession session = voterSessions.get(e.getPlayer().getUniqueId());
         if (session != null) cancelVote(session, "Votación cancelada: un jugador se desconectó.");
         clearLobbyEffects(e.getPlayer());
+        awaitingDungeonRespawn.remove(e.getPlayer().getUniqueId());
         // Limpiar la sesion al desconectar, para que no quede bloqueado "ya esta en partida".
         String name = playingWorld.get(e.getPlayer().getUniqueId());
         if (name != null && finishing.contains(name)) returnPlayer(e.getPlayer(), name);
