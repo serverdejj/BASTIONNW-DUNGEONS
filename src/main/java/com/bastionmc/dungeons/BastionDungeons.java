@@ -942,25 +942,57 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             }, 40L);
         }
     }
-    @EventHandler public void onRespawn(org.bukkit.event.player.PlayerRespawnEvent e) {
-        String name = playingWorld.get(e.getPlayer().getUniqueId());
-        if (name != null && Bukkit.getWorld(name) != null) {
-            e.setRespawnLocation(Bukkit.getWorld(name).getSpawnLocation());
-            UUID id = e.getPlayer().getUniqueId();
-            Bukkit.getScheduler().runTask(this, () -> {
-                Player player = Bukkit.getPlayer(id);
-                if (player == null || !player.isOnline() || !name.equals(playingWorld.get(id))) return;
-                player.setGameMode(GameMode.SPECTATOR);
-                // Iniciar el tiempo desde el respawn real, no desde PlayerDeathEvent.
-                player.sendMessage(ChatColor.GRAY + "Regresando al spawn en 5 segundos...");
-                Bukkit.getScheduler().runTaskLater(this, () -> {
-                    if (!name.equals(playingWorld.get(id))) return;
-                    awaitingDungeonRespawn.remove(id);
-                    if (player.isOnline()) returnPlayer(player, name);
-                }, 100L);
-            });
+    // Forzar la reaparición DENTRO de la mazmorra. Otros plugins de spawn
+    // pueden reemplazar el destino del evento o teletransportar al jugador
+    // justo después de reaparecer.
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onRespawn(org.bukkit.event.player.PlayerRespawnEvent e) {
+        UUID id = e.getPlayer().getUniqueId();
+        String name = playingWorld.get(id);
+        if (name == null || !awaitingDungeonRespawn.contains(id)) return;
+        World dungeon = Bukkit.getWorld(name);
+        if (dungeon == null) return;
+        Location inside = entryPoints.getOrDefault(name, dungeon.getSpawnLocation()).clone();
+        e.setRespawnLocation(inside);
+        Bukkit.getScheduler().runTask(this, () -> {
+            Player player = Bukkit.getPlayer(id);
+            if (player == null || !player.isOnline() || !name.equals(playingWorld.get(id))) return;
+            // El modo espectador se activa mientras el jugador sigue en la dungeon.
+            player.setGameMode(GameMode.SPECTATOR);
+            ensureSpectatorInsideDungeon(id, name, inside);
+            player.sendMessage(ChatColor.GRAY + "Permanecerás 5 segundos como espectador dentro de la mazmorra...");
+            // Corrección adicional por si otro plugin cambia el spawn un tick después.
+            Bukkit.getScheduler().runTaskLater(this, () -> ensureSpectatorInsideDungeon(id, name, inside), 2L);
+            Bukkit.getScheduler().runTaskLater(this, () -> ensureSpectatorInsideDungeon(id, name, inside), 10L);
+            // La salida y la restauración a Survival ocurren JUNTAS tras 5 segundos.
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (!name.equals(playingWorld.get(id))) return;
+                awaitingDungeonRespawn.remove(id);
+                if (player.isOnline()) returnPlayer(player, name);
+            }, 100L);
+        });
+    }
+
+    private void ensureSpectatorInsideDungeon(UUID id, String name, Location inside) {
+        if (!awaitingDungeonRespawn.contains(id) || !name.equals(playingWorld.get(id))) return;
+        Player player = Bukkit.getPlayer(id);
+        if (player == null || !player.isOnline() || player.isDead()) return;
+        if (player.getGameMode() != GameMode.SPECTATOR) player.setGameMode(GameMode.SPECTATOR);
+        if (!player.getWorld().getName().equals(name)) {
+            if (!player.teleport(inside)) getLogger().warning("No se pudo mantener en la dungeon al espectador " + player.getName());
         }
     }
+
+    // Impedir que otros plugins saquen al espectador antes de sus cinco segundos.
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onWaitingSpectatorTeleport(org.bukkit.event.player.PlayerTeleportEvent event) {
+        UUID id = event.getPlayer().getUniqueId();
+        if (!awaitingDungeonRespawn.contains(id)) return;
+        String name = playingWorld.get(id);
+        if (name == null || event.getTo() == null || event.getTo().getWorld() == null) return;
+        if (!name.equals(event.getTo().getWorld().getName())) event.setCancelled(true);
+    }
+
     // MythicMobs API is invoked reflectively to avoid requiring a paid API artifact
     // at build time. Errors are logged rather than spawning vanilla replacements.
     private LivingEntity spawnMythic(String mobId, Location location) throws Exception {
