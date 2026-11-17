@@ -807,7 +807,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         prepareNametagTravel(p, true);
         // Un espectador puede estar siguiendo a otra entidad.
         if (p.getGameMode() == GameMode.SPECTATOR) p.setSpectatorTarget(null);
+        // Restaurar Survival antes de cambiar de mundo: otros plugins pueden
+        // reaccionar al teletransporte y conservar el modo de juego anterior.
+        GameMode previousMode = p.getGameMode();
+        p.setGameMode(GameMode.SURVIVAL);
         if (!p.teleport(back)) {
+            p.setGameMode(previousMode);
             if (attempt < 5) {
                 Bukkit.getScheduler().runTaskLater(this, () -> returnPlayer(p, name, attempt + 1), 20L);
             } else {
@@ -820,8 +825,22 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         frozen.remove(id);
         playingWorld.remove(id);
         returns.remove(id);
+        // La restauración se repite después de que finalicen los eventos de
+        // teletransporte/respawn. Solo fuera de una partida y en el destino
+        // esperado, para no alterar una mazmorra nueva ni otros mundos.
+        Bukkit.getScheduler().runTaskLater(this, () -> restoreSurvivalAfterReturn(id, back), 1L);
+        Bukkit.getScheduler().runTaskLater(this, () -> restoreSurvivalAfterReturn(id, back), 10L);
         // La limpieza se intenta otra vez cuando termine el último retorno.
         if (finishing.contains(name)) finishInstance(name);
+    }
+
+    private void restoreSurvivalAfterReturn(UUID id, Location destination) {
+        Player player = Bukkit.getPlayer(id);
+        if (player == null || !player.isOnline() || player.isDead()) return;
+        if (playingWorld.containsKey(id) || preparing.contains(id)) return;
+        if (destination.getWorld() == null || !destination.getWorld().equals(player.getWorld())) return;
+        if (player.getGameMode() == GameMode.SPECTATOR) player.setSpectatorTarget(null);
+        if (player.getGameMode() != GameMode.SURVIVAL) player.setGameMode(GameMode.SURVIVAL);
     }
 
     private void releaseParty(String name) {
