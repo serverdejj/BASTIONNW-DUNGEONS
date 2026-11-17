@@ -1,2 +1,18 @@
 # BASTION DUNGEONS 1.2.22: mundos permanentes en plugins/BastionDungeons/worlds/
 # Los spawns se guardan mediante comandos en spawns.yml y mobspawns.yml.
+
+# Votación de dificultad (todos votan; empates al azar).
+difficulty:
+  easy:
+    health-multiplier: 0.5
+  normal:
+    health-multiplier: 1.0
+  hard:
+    health-multiplier: 2.0
+
+# Cada intervalo se mueve el enemigo más lejano de su jugador más cercano.
+enemy-stalking:
+  enabled: true
+  interval-seconds: 10
+  include-bosses: true
+  distance-behind-player: 2.0
