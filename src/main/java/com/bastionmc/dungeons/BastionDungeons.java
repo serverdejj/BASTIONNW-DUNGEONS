@@ -123,7 +123,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private String format(String value) {
         java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("&#([0-9a-fA-F]{6})").matcher(value);
         StringBuffer buffer = new StringBuffer();
-        while (matcher.find()) matcher.appendReplacement(buffer, java.util.regex.Matcher.quoteReplacement(hex("#" + matcher.group(1))));
+        while (matcher.find()) matcher.appendReplacement(buffer, java.util.regex.Matcher.quoteReplacement(hex("#" + matcher.group(1)).toString()));
         matcher.appendTail(buffer);
         return ChatColor.translateAlternateColorCodes('&', buffer.toString());
     }
