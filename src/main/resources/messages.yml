@@ -1,0 +1,9 @@
+start-title: '&f☠ &#9640FC&lINICIANDO MAZMORRA &r&f☠'
+start-subtitle:
+  easy: '&#55FF55Modalidad Fácil'
+  normal: '&#FFAA00Modalidad Normal'
+  hard: '&#FF5555Modalidad Difícil'
+winner: '&dDificultad ganadora: &f{difficulty}'
+vote-cancelled: '&cVotación cancelada: un integrante salió.'
+boundary: '&cNo puedes salir de los límites de la mazmorra.'
+vote-instructions: '&eTienes 20 segundos para votar. Después habrá 5 segundos de resultados y 5 de preparación.'

@@ -59,6 +59,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         final File schematic;
         final Map<UUID, Difficulty> votes = new HashMap<>();
         int remaining = -1;
+        int votingSeconds = 0;
+        boolean results = false;
         org.bukkit.scheduler.BukkitTask task;
         VoteSession(UUID leader, List<Player> players, File schematic) {
             this.leader = leader;
@@ -104,6 +106,46 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final File spawnFile = new File(getDataFolder(), "spawns.yml");
     private final File mobSpawnFile = new File(getDataFolder(), "mobspawns.yml");
     private final File lootFile = new File(getDataFolder(), "loot.yml");
+    private org.bukkit.configuration.file.FileConfiguration menusConfig;
+    private org.bukkit.configuration.file.FileConfiguration messagesConfig;
+    private org.bukkit.configuration.file.FileConfiguration difficultiesConfig;
+    private org.bukkit.configuration.file.FileConfiguration soundsConfig;
+    private void loadExtraConfigs() {
+        for (String file : List.of("menus.yml", "messages.yml", "difficulties.yml", "sounds.yml")) saveResourceIfAbsent(file);
+        menusConfig = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(new File(getDataFolder(), "menus.yml"));
+        messagesConfig = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(new File(getDataFolder(), "messages.yml"));
+        difficultiesConfig = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(new File(getDataFolder(), "difficulties.yml"));
+        soundsConfig = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(new File(getDataFolder(), "sounds.yml"));
+    }
+    private void saveResourceIfAbsent(String name) {
+        if (!new File(getDataFolder(), name).exists()) saveResource(name, false);
+    }
+    private String format(String value) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("&#([0-9a-fA-F]{6})").matcher(value);
+        StringBuffer buffer = new StringBuffer();
+        while (matcher.find()) matcher.appendReplacement(buffer, java.util.regex.Matcher.quoteReplacement(hex("#" + matcher.group(1))));
+        matcher.appendTail(buffer);
+        return ChatColor.translateAlternateColorCodes('&', buffer.toString());
+    }
+    private String menuText(String key, String fallback) { return format(menusConfig.getString(key, fallback)); }
+    private String messageText(String key, String fallback) { return format(messagesConfig.getString(key, fallback)); }
+    private String voteTitle() { return menuText("voting.title", "&5⚔ Votación de dificultad"); }
+    private String previewTitle() { return menuText("preview.title", "&5⚔ BASTION DUNGEONS"); }
+    private int voteSlot(Difficulty d) { return menusConfig.getInt("voting.options." + d.name().toLowerCase(Locale.ROOT) + ".slot", d == Difficulty.EASY ? 11 : d == Difficulty.NORMAL ? 13 : 15); }
+    private String difficultyName(Difficulty d) { return menuText("voting.options." + d.name().toLowerCase(Locale.ROOT) + ".name", d.name()); }
+    private String replaceVoteVars(String line, VoteSession session, Difficulty d, Player viewer) {
+        long count = session.votes.values().stream().filter(v -> v == d).count();
+        String names = session.members.stream().filter(id -> session.votes.get(id) == d)
+                .map(id -> Bukkit.getPlayer(id) == null ? id.toString() : Bukkit.getPlayer(id).getName())
+                .collect(java.util.stream.Collectors.joining(", "));
+        return format(line.replace("{votes}", "" + count).replace("{voters}", names.isEmpty() ? "-" : names)
+                .replace("{players}", "" + session.members.size()).replace("{voted}", "" + session.votes.size())
+                .replace("{seconds}", "" + Math.max(0, session.results ? session.remaining : session.votingSeconds))
+                .replace("{your_vote}", session.votes.get(viewer.getUniqueId()) == d ? "✔" : ""));
+    }
+    private double difficultyMultiplier(Difficulty d, String key, double fallback) {
+        return difficultiesConfig.getDouble("difficulty." + d.name().toLowerCase(Locale.ROOT) + "." + key, fallback);
+    }
 
     @Override public void onEnable() {
         getDataFolder().mkdirs();
@@ -111,10 +153,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Objects.requireNonNull(getCommand("dungeon")).setExecutor(this);
         Objects.requireNonNull(getCommand("dungeon")).setTabCompleter(this);
         saveDefaultConfig();
+        loadExtraConfigs();
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
-        getLogger().info("Bastion Dungeons 1.2.10-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.26-dev listo.");
     }
 
     private void loadSchedule() {
@@ -303,6 +346,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             String base = "loot." + mob + "." + key;
             org.bukkit.inventory.ItemStack item = cfg.getItemStack(base + ".item");
             double chance = cfg.getDouble(base + ".chance", 0);
+            Difficulty difficulty = worldDifficulties.getOrDefault(event.getEntity().getWorld().getName(), Difficulty.NORMAL);
+            chance = Math.min(100.0, Math.max(0.0, chance * difficultyMultiplier(difficulty, "loot-multiplier", difficulty == Difficulty.EASY ? 0.5 : difficulty == Difficulty.HARD ? 2.0 : 1.0)));
             if (item != null && !item.getType().isAir() && chance > 0 && random.nextDouble() * 100 < chance)
                 rewards.add(item.clone());
         }
@@ -439,10 +484,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private void openDungeonMenu(Player p) {
         VoteSession session = voterSessions.get(p.getUniqueId());
         if (session != null) { showVoteMenu(p, session); return; }
-        org.bukkit.inventory.Inventory menu = Bukkit.createInventory(null, 27, "§5⚔ BASTION DUNGEONS");
-        menu.setItem(11, menuItem(Material.LIME_WOOL, "§aFÁCIL", List.of("§7Vida de enemigos: §f50%", "§eUsa /dungeon go para votar")));
-        menu.setItem(13, menuItem(Material.YELLOW_WOOL, "§eNORMAL", List.of("§7Vida de enemigos: §f100%", "§eUsa /dungeon go para votar")));
-        menu.setItem(15, menuItem(Material.RED_WOOL, "§cDIFÍCIL", List.of("§7Vida de enemigos: §f200%", "§eUsa /dungeon go para votar")));
+        org.bukkit.inventory.Inventory menu = Bukkit.createInventory(null, 27, previewTitle());
+        for (Difficulty d : Difficulty.values()) {
+            String key = "voting.options." + d.name().toLowerCase(Locale.ROOT);
+            Material material = Material.matchMaterial(menusConfig.getString(key + ".material", d == Difficulty.EASY ? "LIME_WOOL" : d == Difficulty.NORMAL ? "YELLOW_WOOL" : "RED_WOOL"));
+            if (material == null) material = Material.PAPER;
+            menu.setItem(voteSlot(d), menuItem(material, difficultyName(d), List.of(menuText("preview.instructions", "&eUsa /dungeon go para votar"))));
+        }
         p.openInventory(menu);
     }
 
@@ -462,34 +510,40 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             voterSessions.put(member.getUniqueId(), session);
             preparing.add(member.getUniqueId());
             showVoteMenu(member, session);
-            msg(member, "Vota una dificultad. Cuando todos voten, habrá 5 segundos de resultados y 5 de preparación.");
+            msg(member, messageText("vote-instructions", "Tienes 20 segundos para votar. Después habrá 5 segundos de resultados y 5 de preparación."));
         }
+        session.votingSeconds = Math.max(1, getConfig().getInt("difficulty-voting.vote-duration-seconds", 20));
         session.task = Bukkit.getScheduler().runTaskTimer(this, () -> {
             if (session.members.stream().anyMatch(id -> Bukkit.getPlayer(id) == null || !preparing.contains(id))) {
-                cancelVote(session, "Votación cancelada: un integrante se desconectó o salió.");
+                cancelVote(session, messageText("vote-cancelled", "Votación cancelada: un integrante salió."));
                 return;
             }
-            if (session.votes.size() != session.members.size()) { session.remaining = -1; return; }
-            if (session.remaining == -1) session.remaining = 4;
+            if (!session.results) {
+                if (session.votes.size() == session.members.size() || session.votingSeconds <= 0) {
+                    session.results = true;
+                    session.remaining = Math.max(1, getConfig().getInt("difficulty-voting.result-seconds", 5));
+                } else session.votingSeconds--;
+            } else if (--session.remaining <= 0) {
+                int max = Arrays.stream(Difficulty.values()).mapToInt(d -> (int) session.votes.values().stream().filter(v -> v == d).count()).max().orElse(0);
+                List<Difficulty> tied = Arrays.stream(Difficulty.values()).filter(d -> session.votes.values().stream().filter(v -> v == d).count() == max).toList();
+                Difficulty selected = max == 0 ? Difficulty.NORMAL : tied.get(random.nextInt(tied.size()));
+                for (UUID id : session.members) {
+                    Player member = Bukkit.getPlayer(id);
+                    pendingDifficulties.put(id, selected);
+                    voterSessions.remove(id);
+                    if (member != null) { member.closeInventory(); msg(member, messageText("winner", "Dificultad ganadora: {difficulty}").replace("{difficulty}", difficultyName(selected))); }
+                }
+                voteSessions.remove(session.leader);
+                session.task.cancel();
+                List<Player> players = session.members.stream().map(Bukkit::getPlayer).filter(Objects::nonNull).toList();
+                beginLobbyCountdown(players, session.schematic);
+                return;
+            }
             for (UUID id : session.members) {
                 Player member = Bukkit.getPlayer(id);
-                if (member != null) member.sendActionBar("§dVotación completada §7· §fCierre en " + session.remaining + "s");
+                if (member != null && member.getOpenInventory().getTitle().equals(voteTitle())) updateVoteMenu(member, session);
             }
-            if (session.remaining-- > 0) return;
-            int max = Arrays.stream(Difficulty.values()).mapToInt(d -> (int) session.votes.values().stream().filter(v -> v == d).count()).max().orElse(0);
-            List<Difficulty> tied = Arrays.stream(Difficulty.values()).filter(d -> session.votes.values().stream().filter(v -> v == d).count() == max).toList();
-            Difficulty selected = tied.get(random.nextInt(tied.size()));
-            for (UUID id : session.members) {
-                Player member = Bukkit.getPlayer(id);
-                pendingDifficulties.put(id, selected);
-                voterSessions.remove(id);
-                if (member != null) { member.closeInventory(); msg(member, "Dificultad ganadora: " + selected.name() + (tied.size() > 1 ? " (desempate aleatorio)" : "")); }
-            }
-            voteSessions.remove(session.leader);
-            session.task.cancel();
-            List<Player> players = session.members.stream().map(Bukkit::getPlayer).filter(Objects::nonNull).toList();
-            beginLobbyCountdown(players, session.schematic);
-        }, 0L, 20L);
+        }, 20L, 20L);
     }
 
     private void cancelVote(VoteSession session, String reason) {
@@ -505,46 +559,56 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private void showVoteMenu(Player player, VoteSession session) {
-        org.bukkit.inventory.Inventory menu = Bukkit.createInventory(null, 27, VOTE_TITLE);
-        Difficulty[] choices = Difficulty.values();
-        Material[] materials = {Material.LIME_WOOL, Material.YELLOW_WOOL, Material.RED_WOOL};
-        String[] colors = {"§a", "§e", "§c"};
-        int[] slots = {11, 13, 15};
-        for (int i = 0; i < 3; i++) {
-            Difficulty choice = choices[i];
-            List<String> lore = new ArrayList<>();
-            lore.add("§7Vida: §f" + (choice == Difficulty.EASY ? "50%" : choice == Difficulty.NORMAL ? "100%" : "200%"));
-            long count = session.votes.values().stream().filter(v -> v == choice).count();
-            lore.add("§fVotos: §e" + count);
-            for (UUID id : session.members) if (session.votes.get(id) == choice) {
-                Player voter = Bukkit.getPlayer(id);
-                lore.add("§7• " + (voter == null ? id.toString() : voter.getName()));
-            }
-            lore.add(session.votes.get(player.getUniqueId()) == choice ? "§a✔ Tu voto" : "§eClic para votar");
-            menu.setItem(slots[i], menuItem(materials[i], colors[i] + choice.name(), lore));
-        }
-        menu.setItem(22, menuItem(Material.PAPER, "§dVotación", List.of("§f" + session.votes.size() + "§7/§f" + session.members.size() + " §7jugadores votaron")));
+        org.bukkit.inventory.Inventory menu = Bukkit.createInventory(null, 27, voteTitle());
+        fillVoteMenu(menu, player, session);
         player.openInventory(menu);
+    }
+    private void updateVoteMenu(Player player, VoteSession session) {
+        fillVoteMenu(player.getOpenInventory().getTopInventory(), player, session);
+    }
+    private void fillVoteMenu(org.bukkit.inventory.Inventory menu, Player player, VoteSession session) {
+        for (Difficulty choice : Difficulty.values()) {
+            String key = "voting.options." + choice.name().toLowerCase(Locale.ROOT);
+            Material material = Material.matchMaterial(menusConfig.getString(key + ".material", choice == Difficulty.EASY ? "LIME_WOOL" : choice == Difficulty.NORMAL ? "YELLOW_WOOL" : "RED_WOOL"));
+            if (material == null) material = Material.PAPER;
+            List<String> lines = menusConfig.getStringList(key + ".lore");
+            if (lines.isEmpty()) lines = List.of("&7Vida: &f{health}", "&7Loot: &f{loot}", "&eVotos: {votes}", "&7Votantes: {voters}", "&7{players} jugadores", "&e{seconds}s restantes");
+            List<String> lore = new ArrayList<>();
+            for (String line : lines) lore.add(replaceVoteVars(line, session, choice, player)
+                    .replace("{health}", "" + difficultyMultiplier(choice, "health-multiplier", 1) + "x")
+                    .replace("{loot}", "" + difficultyMultiplier(choice, "loot-multiplier", 1) + "x"));
+            menu.setItem(voteSlot(choice), menuItem(material, difficultyName(choice), lore));
+        }
+        int count = session.members.size();
+        String scaling = count == 1 ? menusConfig.getString("voting.scaling.solo", "&a1 jugador - Enemigos normales") : menusConfig.getString("voting.scaling.multiplayer", "&e{players} jugadores - + enemigos");
+        List<String> summary = new ArrayList<>();
+        for (String line : menusConfig.getStringList("voting.summary.lore"))
+            summary.add(format(line.replace("{voted}", "" + session.votes.size()).replace("{players}", "" + count)
+                    .replace("{seconds}", "" + Math.max(0, session.results ? session.remaining : session.votingSeconds))));
+        summary.add(format(scaling.replace("{players}", "" + count)));
+        Material summaryMaterial = Material.matchMaterial(menusConfig.getString("voting.summary.material", "PAPER"));
+        menu.setItem(menusConfig.getInt("voting.summary.slot", 22), menuItem(summaryMaterial == null ? Material.PAPER : summaryMaterial,
+                menuText("voting.summary.name", "&dVotación"), summary));
     }
 
     @EventHandler public void onVoteClick(org.bukkit.event.inventory.InventoryClickEvent e) {
         String title = e.getView().getTitle();
-        if (!title.equals(VOTE_TITLE) && !title.equals("§5⚔ BASTION DUNGEONS")) return;
+        if (!title.equals(voteTitle()) && !title.equals(previewTitle())) return;
         e.setCancelled(true);
-        if (!title.equals(VOTE_TITLE) || !(e.getWhoClicked() instanceof Player player)) return;
+        if (!title.equals(voteTitle()) || !(e.getWhoClicked() instanceof Player player)) return;
         VoteSession session = voterSessions.get(player.getUniqueId());
-        if (session == null || session.remaining >= 0 || e.getClickedInventory() != e.getView().getTopInventory()) return;
-        Difficulty choice = switch (e.getRawSlot()) { case 11 -> Difficulty.EASY; case 13 -> Difficulty.NORMAL; case 15 -> Difficulty.HARD; default -> null; };
+        if (session == null || session.results || e.getClickedInventory() != e.getView().getTopInventory()) return;
+        Difficulty choice = Arrays.stream(Difficulty.values()).filter(d -> voteSlot(d) == e.getRawSlot()).findFirst().orElse(null);
         if (choice == null) return;
         session.votes.put(player.getUniqueId(), choice);
         for (UUID id : session.members) {
             Player member = Bukkit.getPlayer(id);
-            if (member != null && member.getOpenInventory().getTitle().equals(VOTE_TITLE)) showVoteMenu(member, session);
+            if (member != null && member.getOpenInventory().getTitle().equals(voteTitle())) updateVoteMenu(member, session);
         }
     }
 
     @EventHandler public void onVoteDrag(org.bukkit.event.inventory.InventoryDragEvent e) {
-        if (e.getView().getTitle().equals(VOTE_TITLE) || e.getView().getTitle().equals("§5⚔ BASTION DUNGEONS")) e.setCancelled(true);
+        if (e.getView().getTitle().equals(voteTitle()) || e.getView().getTitle().equals(previewTitle())) e.setCancelled(true);
     }
 
     private void beginLobbyCountdown(List<Player> team, File file) {
@@ -572,8 +636,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             net.md_5.bungee.api.ChatColor.of("#A5FFB6") + "¡Todo Listo!" + org.bukkit.ChatColor.WHITE
                             + ", Enviándote a la mazmorra");
                     for (Player member : team) {
-                        member.sendTitle(ChatColor.WHITE + "☠ " + hex("#9640FC") + ChatColor.BOLD + "INICIANDO MAZMORRA " + ChatColor.RESET + ChatColor.WHITE + "☠",
-                                "", 0, 40, 10);
+                        member.sendTitle(messageText("start-title", "&f☠ &#9640FC&lINICIANDO MAZMORRA &r&f☠"),
+                                messageText("start-subtitle." + pendingDifficulties.getOrDefault(member.getUniqueId(), Difficulty.NORMAL).name().toLowerCase(Locale.ROOT), "&aModalidad Fácil"), 0, 40, 10);
                         // Efecto de terror al mostrar el título de inicio (una sola vez por jugador).
                         member.playSound(member.getLocation(), Sound.ENTITY_WARDEN_ROAR, 0.75f, 0.85f);
                     }
@@ -940,9 +1004,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler(ignoreCancelled = true)
-    public void onDungeonBreak(BlockBreakEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    public void onDungeonBreak(BlockBreakEvent event) { if (dungeonWorld(event.getBlock().getWorld()) && getConfig().getBoolean("dungeon-protection.block-breaking", true)) event.setCancelled(true); }
     @EventHandler(ignoreCancelled = true)
-    public void onDungeonPlace(BlockPlaceEvent event) { if (dungeonWorld(event.getBlock().getWorld())) event.setCancelled(true); }
+    public void onDungeonPlace(BlockPlaceEvent event) { if (dungeonWorld(event.getBlock().getWorld()) && getConfig().getBoolean("dungeon-protection.block-placing", true)) event.setCancelled(true); }
     @EventHandler(ignoreCancelled = true)
     public void onDungeonBucketEmpty(PlayerBucketEmptyEvent event) { if (dungeonWorld(event.getPlayer().getWorld())) event.setCancelled(true); }
     @EventHandler(ignoreCancelled = true)
@@ -962,16 +1026,23 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     @EventHandler(ignoreCancelled = true)
     public void onDungeonInteract(PlayerInteractEvent event) {
         if (!dungeonWorld(event.getPlayer().getWorld())) return;
-        if (event.getClickedBlock() != null && (event.getAction() == org.bukkit.event.block.Action.RIGHT_CLICK_BLOCK)) {
-            // Bloquear cambios de estructura; permitir puertas y botones para mapas interactivos.
-            org.bukkit.Material material = event.getClickedBlock().getType();
-            if (material == Material.FARMLAND || material == Material.CAMPFIRE || material == Material.SOUL_CAMPFIRE
-                    || material == Material.RESPAWN_ANCHOR || material == Material.COMPOSTER
-                    || material == Material.CAULDRON || material == Material.WATER_CAULDRON
-                    || material == Material.LAVA_CAULDRON || material == Material.POWDER_SNOW_CAULDRON
-                    || material.name().contains("CANDLE") || material.name().contains("BED")) event.setCancelled(true);
+        if (getConfig().getBoolean("dungeon-protection.block-ender-pearls", true)
+                && event.getItem() != null && event.getItem().getType() == Material.ENDER_PEARL) {
+            event.setCancelled(true); return;
         }
-        if (event.getAction() == org.bukkit.event.block.Action.PHYSICAL) event.setCancelled(true);
+        if (getConfig().getBoolean("dungeon-protection.block-interactions", true)
+                && (event.getClickedBlock() != null || event.getAction() == org.bukkit.event.block.Action.PHYSICAL))
+            event.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonPearl(org.bukkit.event.player.PlayerTeleportEvent event) {
+        if (event.getCause() == org.bukkit.event.player.PlayerTeleportEvent.TeleportCause.ENDER_PEARL
+                && dungeonWorld(event.getPlayer().getWorld())
+                && getConfig().getBoolean("dungeon-protection.block-ender-pearls", true)) event.setCancelled(true);
+    }
+    @EventHandler(ignoreCancelled = true)
+    public void onDungeonEntityInteract(PlayerInteractEntityEvent event) {
+        if (dungeonWorld(event.getPlayer().getWorld()) && getConfig().getBoolean("dungeon-protection.block-interactions", true)) event.setCancelled(true);
     }
     @EventHandler(ignoreCancelled = true)
     public void onDungeonArmorStand(PlayerArmorStandManipulateEvent event) { if (dungeonWorld(event.getPlayer().getWorld())) event.setCancelled(true); }
@@ -993,12 +1064,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (center != null && destination.getWorld().equals(center.getWorld())) {
                 double dx = destination.getX() - center.getX();
                 double dz = destination.getZ() - center.getZ();
-                if (dx * dx + dz * dz > 33.0 * 33.0) {
+                if ((getConfig().getBoolean("height-protection.enabled", true)
+                        && destination.getY() > center.getY() + getConfig().getDouble("height-protection.max-height-above-spawn", 10.0))
+                        || dx * dx + dz * dz > 33.0 * 33.0) {
                     // Programar el teleport fuera de PlayerMoveEvent para evitar reentradas.
                     Bukkit.getScheduler().runTask(this, () -> {
                         if (instance.equals(playingWorld.get(player.getUniqueId())) && player.isOnline()) {
                             player.teleport(center.clone());
-                            msg(player, "No puedes alejarte más de 33 bloques del inicio de la mazmorra.");
+                            msg(player, messageText("boundary", "No puedes salir de los límites de la mazmorra."));
                         }
                     });
                     event.setTo(event.getFrom());
@@ -1151,8 +1224,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void setEnemyHealth(LivingEntity mob, double hp) {
         Difficulty difficulty = worldDifficulties.getOrDefault(mob.getWorld().getName(), Difficulty.NORMAL);
-        hp *= getConfig().getDouble("difficulty." + difficulty.name().toLowerCase(Locale.ROOT) + ".health-multiplier",
-                difficulty == Difficulty.EASY ? 0.5 : difficulty == Difficulty.HARD ? 2.0 : 1.0);
+        hp *= difficultyMultiplier(difficulty, "health-multiplier", difficulty == Difficulty.EASY ? 0.5 : difficulty == Difficulty.HARD ? 2.0 : 1.0);
         hp = Math.max(1.0, hp);
         var attribute = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
         if (attribute != null) {
@@ -1335,7 +1407,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     defeated.merge(name, 1, Integer::sum);
                     continue;
                 }
-                updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
+                if (elapsed % 2 == 0) updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
                 pursueEnemy(mob, mobId, players, world);
             }
             for (UUID bossId : new HashSet<>(bosses.getOrDefault(name, Set.of()))) {
@@ -1375,12 +1447,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
-    @EventHandler public void onMobDeath(EntityDeathEvent event) {
+    @EventHandler(priority = EventPriority.HIGHEST) public void onMobDeath(EntityDeathEvent event) {
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
         String deadType = enemyTypes.get(dead);
         if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = "SkeletonKing";
-        if (deadType != null) rollLoot(event, deadType);
+        if (deadType != null) {
+            if (getConfig().getBoolean("mob-drops.custom-loot-only", true)) {
+                event.getDrops().clear();
+                event.setDroppedExp(0);
+            }
+            rollLoot(event, deadType);
+        }
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;

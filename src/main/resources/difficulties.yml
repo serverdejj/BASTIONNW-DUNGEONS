@@ -1,0 +1,11 @@
+# NORMAL es el valor base para vida y probabilidad de loot.
+difficulty:
+  easy:
+    health-multiplier: 0.5
+    loot-multiplier: 0.5
+  normal:
+    health-multiplier: 1.0
+    loot-multiplier: 1.0
+  hard:
+    health-multiplier: 2.0
+    loot-multiplier: 2.0

@@ -1,0 +1,55 @@
+# BASTION DUNGEONS - menús personalizables. HEX: &#RRGGBB; estilos: &l, &o, &r.
+preview:
+  title: '&#9640FC&l⚔ BASTION DUNGEONS'
+  instructions: '&eEl líder inicia con /dungeon go'
+voting:
+  title: '&#9640FC&l⚔ Votación de dificultad'
+  options:
+    easy:
+      slot: 11
+      material: LIME_WOOL
+      name: '&#55FF55&lFÁCIL'
+      lore:
+        - '&7Vida de enemigos: &a×0.5'
+        - '&7Probabilidad de loot: &a×0.5'
+        - '&aVentaja: enemigos con menos vida'
+        - '&cDesventaja: menos probabilidad de loot'
+        - '&fVotos: &e{votes}'
+        - '&7Votaron: &f{voters}'
+        - '&7Tu voto: &a{your_vote}'
+        - '&eQuedan {seconds} segundos'
+    normal:
+      slot: 13
+      material: YELLOW_WOOL
+      name: '&#FFAA00&lNORMAL'
+      lore:
+        - '&7Vida de enemigos: &e×1'
+        - '&7Probabilidad de loot: &e×1'
+        - '&eVida y recompensas originales'
+        - '&fVotos: &e{votes}'
+        - '&7Votaron: &f{voters}'
+        - '&7Tu voto: &a{your_vote}'
+        - '&eQuedan {seconds} segundos'
+    hard:
+      slot: 15
+      material: RED_WOOL
+      name: '&#FF5555&lDIFÍCIL'
+      lore:
+        - '&7Vida de enemigos: &c×2'
+        - '&7Probabilidad de loot: &a×2'
+        - '&aVentaja: mayor probabilidad de recompensas'
+        - '&cDesventaja: enemigos con el doble de vida'
+        - '&fVotos: &e{votes}'
+        - '&7Votaron: &f{voters}'
+        - '&7Tu voto: &a{your_vote}'
+        - '&eQuedan {seconds} segundos'
+  summary:
+    slot: 22
+    material: PAPER
+    name: '&d&lVotación'
+    lore:
+      - '&f{voted}&7/&f{players} &7jugadores votaron'
+      - '&eTiempo: {seconds}s'
+  scaling:
+    solo: '&a1 jugador - Enemigos normales'
+    multiplayer: '&e{players} jugadores - + enemigos'

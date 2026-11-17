@@ -16,3 +16,20 @@ enemy-stalking:
   interval-seconds: 10
   include-bosses: true
   distance-behind-player: 2.0
+
+difficulty-voting:
+  vote-duration-seconds: 20
+  result-seconds: 5
+
+dungeon-protection:
+  block-interactions: true
+  block-breaking: true
+  block-placing: true
+  block-ender-pearls: true
+
+mob-drops:
+  custom-loot-only: true
+
+height-protection:
+  enabled: true
+  max-height-above-spawn: 10
