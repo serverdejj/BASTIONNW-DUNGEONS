@@ -33,3 +33,10 @@ mob-drops:
 height-protection:
   enabled: true
   max-height-above-spawn: 10
+
+# Solo los mundos de instancia bd_* creados por BastionDungeons.
+# MythicMobs invocados por el plugin se permiten con SpawnReason.CUSTOM.
+dungeon-mobs:
+  block-natural-spawns: true
+  # false: solo invocaciones hechas por BastionDungeons mediante MythicMobs.
+  allow-other-custom-spawns: false

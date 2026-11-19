@@ -74,6 +74,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<UUID, String> playingWorld = new HashMap<>();
     private final Set<UUID> awaitingDungeonRespawn = new HashSet<>();
     private final Set<String> instanceWorlds = new HashSet<>();
+    private int mythicSpawnDepth = 0;
     private final Map<String, Set<UUID>> enemies = new HashMap<>();
     private final Map<UUID, String> enemyTypes = new HashMap<>();
     private final Map<String, Set<UUID>> bosses = new HashMap<>();
@@ -234,6 +235,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
+        else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 2) {
+            options.add("map");
+            for (File f : availableMaps()) options.add(mapId(f));
+        }
+        else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 3 && args[1].equalsIgnoreCase("map")) {
+            for (File f : availableMaps()) options.add(mapId(f));
+        }
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("add", "list", "remove"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
         else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("loot")) {
@@ -249,6 +257,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         String prefix = args[args.length - 1].toLowerCase(Locale.ROOT);
         return options.stream().filter(v -> v.toLowerCase(Locale.ROOT).startsWith(prefix)).toList();
+    }
+
+    // Only registered schematic files in our own directory may be started manually.
+    private List<File> availableMaps() {
+        File folder = new File(getDataFolder(), "schematics");
+        File[] files = folder.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".schem"));
+        if (files == null) return List.of();
+        return Arrays.stream(files).sorted(Comparator.comparing(File::getName, String.CASE_INSENSITIVE_ORDER)).toList();
+    }
+
+    private String mapId(File f) {
+        String name = f.getName();
+        return name.substring(0, name.length() - ".schem".length());
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -464,16 +485,37 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             leave(p); return true;
         }
         if (args[0].equalsIgnoreCase("go")) {
-            if (!canJoin(p)) return true;
+            // OP may select a specific schematic, including outside the public opening window.
+            // Normal /dungeon go remains random with the original restrictions.
+            boolean selecting = args.length > 1;
+            if (selecting && !p.isOp()) { msg(p, messageText("admin-map-denied", "&cSolo los OP pueden elegir un mapa.")); return true; }
+            if (!selecting && !canJoin(p)) return true;
             if (!leader(id).equals(id)) { msg(p,"Solo el lider puede iniciar."); return true; }
             List<Player> team = members(id);
-            if (team.stream().anyMatch(q -> !canJoin(q))) { msg(p, "Algún miembro no tiene acceso a esta apertura."); return true; }
-            if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()) || preparing.contains(q.getUniqueId()))) { msg(p,"Alguien ya esta en partida."); return true; }
-            File folder = new File(getDataFolder(), "schematics");
-            File[] schems = folder.listFiles(f -> f.isFile() && f.getName().toLowerCase(Locale.ROOT).endsWith(".schem"));
-            if (schems == null || schems.length == 0) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
-            File chosen = schems[new Random().nextInt(schems.length)];
-            // Reservar la entrada al iniciar la cuenta atrás para evitar partidas duplicadas.
+            if (!selecting && team.stream().anyMatch(q -> !canJoin(q))) { msg(p, "Algún miembro no tiene acceso a esta apertura."); return true; }
+            if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId()) || preparing.contains(q.getUniqueId()) || voterSessions.containsKey(q.getUniqueId()))) {
+                msg(p,"Alguien ya esta en partida, preparacion o votacion."); return true;
+            }
+            List<File> schems = availableMaps();
+            if (schems.isEmpty()) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
+            File chosen;
+            if (selecting) {
+                String desired = args.length == 3 && args[1].equalsIgnoreCase("map") ? args[2] : args.length == 2 ? args[1] : null;
+                if (desired == null || desired.equalsIgnoreCase("map")) {
+                    msg(p, messageText("admin-map-list", "&eMapas disponibles: &f{maps}")
+                            .replace("{maps}", schems.stream().map(this::mapId).collect(java.util.stream.Collectors.joining(", "))));
+                    msg(p, messageText("admin-map-usage", "&eUsa /dungeon go map <nombre>"));
+                    return true;
+                }
+                chosen = schems.stream().filter(f -> mapId(f).equalsIgnoreCase(desired)
+                        || f.getName().equalsIgnoreCase(desired)).findFirst().orElse(null);
+                if (chosen == null) {
+                    msg(p, messageText("admin-map-unknown", "&cMapa no encontrado: &f{map}").replace("{map}", desired));
+                    return true;
+                }
+                msg(p, messageText("admin-map-selected", "&aMapa seleccionado: &b{map}").replace("{map}", mapId(chosen)));
+            } else chosen = schems.get(random.nextInt(schems.size()));
+            // Preserve the existing reservation and voting/countdown workflow.
             for (Player member : team) if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
             saveSchedule();
             beginDifficultyVote(team, chosen);
@@ -672,6 +714,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 .generator(new ChunkGenerator() {}).generateStructures(false).createWorld();
         if (world == null) throw new IllegalStateException("No se pudo crear mundo");
         instanceWorlds.add(name);
+        if (getConfig().getBoolean("dungeon-mobs.block-natural-spawns", true)) {
+            world.setGameRule(GameRule.DO_MOB_SPAWNING, false);
+            world.setSpawnFlags(false, false);
+        }
         worldDifficulties.put(name, pendingDifficulties.getOrDefault(team.get(0).getUniqueId(), Difficulty.NORMAL));
         for (Player member : team) pendingDifficulties.remove(member.getUniqueId());
         try {
@@ -734,6 +780,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             cleanupFailedWorld(name);
             throw ex;
         }
+    }
+
+    // Dungeon instance worlds only: never allow ambient vanilla monsters/animals.
+    // MythicMobs summons through the plugin API (SpawnReason.CUSTOM), which is allowed.
+    @EventHandler(priority = org.bukkit.event.EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onDungeonNaturalSpawn(org.bukkit.event.entity.CreatureSpawnEvent event) {
+        if (!instanceWorlds.contains(event.getLocation().getWorld().getName())) return;
+        if (!getConfig().getBoolean("dungeon-mobs.block-natural-spawns", true)) return;
+        boolean ourMythicSummon = mythicSpawnDepth > 0 &&
+                event.getSpawnReason() == org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM;
+        boolean otherCustomAllowed = getConfig().getBoolean("dungeon-mobs.allow-other-custom-spawns", false) &&
+                event.getSpawnReason() == org.bukkit.event.entity.CreatureSpawnEvent.SpawnReason.CUSTOM;
+        if (!ourMythicSummon && !otherCustomAllowed) event.setCancelled(true);
     }
 
     private void cleanupFailedWorld(String name) {
@@ -999,8 +1058,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Class<?> api = Class.forName("io.lumine.mythic.bukkit.MythicBukkit");
         Object plugin = api.getMethod("inst").invoke(null);
         Object manager = api.getMethod("getMobManager").invoke(plugin);
-        Object active = manager.getClass().getMethod("spawnMob", String.class, Location.class)
-                .invoke(manager, mobId, location);
+        Object active;
+        mythicSpawnDepth++;
+        try {
+            active = manager.getClass().getMethod("spawnMob", String.class, Location.class)
+                    .invoke(manager, mobId, location);
+        } finally {
+            mythicSpawnDepth--;
+        }
         if (active == null) throw new IllegalStateException("MythicMob no encontrado: " + mobId);
         Object abstractEntity = active.getClass().getMethod("getEntity").invoke(active);
         Entity entity = (Entity) abstractEntity.getClass().getMethod("getBukkitEntity").invoke(abstractEntity);

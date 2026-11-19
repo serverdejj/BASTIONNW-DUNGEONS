@@ -7,3 +7,10 @@ winner: '&dDificultad ganadora: &f{difficulty}'
 vote-cancelled: '&cVotación cancelada: un integrante salió.'
 boundary: '&cNo puedes salir de los límites de la mazmorra.'
 vote-instructions: '&eTienes 20 segundos para votar. Después habrá 5 segundos de resultados y 5 de preparación.'
+
+# Selección manual de mapas para administradores OP.
+admin-map-denied: '&cSolo los OP pueden elegir un mapa.'
+admin-map-list: '&eMapas disponibles: &f{maps}'
+admin-map-usage: '&eUsa /dungeon go map <nombre>'
+admin-map-unknown: '&cMapa no encontrado: &f{map}'
+admin-map-selected: '&aMapa seleccionado: &b{map}'
