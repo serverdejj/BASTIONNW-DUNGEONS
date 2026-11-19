@@ -84,6 +84,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, Integer> adventureCompletedZones = new HashMap<>();
     private final Map<String, Integer> adventureActiveZone = new HashMap<>();
     private final Map<String, Integer> adventureWave = new HashMap<>();
+    private final Map<UUID, Long> adventureOutsideSince = new HashMap<>();
     private final Set<String> adventureNextWavePending = new HashSet<>();
     private final Set<UUID> parkourReturning = new HashSet<>();
     private final Set<String> adventureBossStarted = new HashSet<>();
@@ -577,7 +578,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         if (completed < zones.size()) {
             Encounter next = zones.get(completed);
-            if (next.center().distanceSquared(to) <= next.radius() * next.radius()) startAdventureEncounter(world, completed, next);
+            if (next.center().distanceSquared(to) <= next.radius() * next.radius()) startAdventureEncounter(world, completed, next, player);
             return false;
         }
         if (adventureBossStarted.contains(instance)) return false;
@@ -647,11 +648,38 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 && getConfig().getBoolean("adventure.leaves.prevent-decay", true)) event.setCancelled(true);
     }
 
-    private void startAdventureEncounter(World world, int index, Encounter zone) {
+    private void startAdventureEncounter(World world, int index, Encounter zone, Player trigger) {
         String instance = world.getName();
         if (adventureActiveZone.containsKey(instance) || adventureBossStarted.contains(instance)) return;
         adventureActiveZone.put(instance, index);
         adventureWave.put(instance, 1);
+        // Reunir a TODOS los companeros activos en el encuentro al activarse.
+        // Esto evita que alguien quede al otro lado de la barrera de 15 bloques.
+        if (getConfig().getBoolean("adventure.encounter.teleport-party-on-start", true)) {
+            for (Player teammate : fighters(world)) {
+                if (!instance.equals(playingWorld.get(teammate.getUniqueId()))) continue;
+                if (horizontalDistanceSquared(zone.center(), teammate.getLocation()) <= 9.0) continue;
+                // Preferir el lugar del activador para que todos aparezcan juntos.
+                Location safe = nearbySafeLocation(world, trigger.getLocation(), 0, 2);
+                if (safe == null || horizontalDistanceSquared(zone.center(), safe) > 14 * 14)
+                    safe = nearbySafeLocation(world, zone.center(), 0, 3);
+                if (safe == null) {
+                    getLogger().warning("No hay posicion segura para reunir a " + teammate.getName() + " en " + instance);
+                    continue;
+                }
+                safe.setYaw(teammate.getLocation().getYaw());
+                safe.setPitch(teammate.getLocation().getPitch());
+                Location destination = safe.clone();
+                Bukkit.getScheduler().runTask(this, () -> {
+                    if (!teammate.isOnline() || !instance.equals(playingWorld.get(teammate.getUniqueId()))
+                            || !Objects.equals(adventureActiveZone.get(instance), index)) return;
+                    if (teammate.teleport(destination)) {
+                        teammate.setFallDistance(0);
+                        msg(teammate, messageText("adventure-party-gathered", "&bTu equipo ha iniciado un encuentro. &fTe reuniste con tus companeros."));
+                    }
+                });
+            }
+        }
         if (!spawnAdventureWave(world, zone, 1)) {
             adventureActiveZone.remove(instance);
             adventureWave.remove(instance);
@@ -675,6 +703,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             try {
                 LivingEntity mob = spawnMythic(mobId, pos);
                 setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
+                // Modificar la velocidad solo de los guerreros esqueletos de esta aventura.
+                if (mobId.equalsIgnoreCase("SkeletalKnight") || mobId.equalsIgnoreCase("SkeletalKingt")) {
+                    var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
+                    if (speed != null) speed.setBaseValue(Math.max(0.05, Math.min(0.7,
+                            getConfig().getDouble("adventure.encounter.skeletal-knight-speed", 0.32))));
+                }
                 active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
                 spawned++;
@@ -723,6 +757,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String instance = world.getName();
         if (!Objects.equals(adventureActiveZone.get(instance), index)) return;
         adventureActiveZone.remove(instance); adventureWave.remove(instance); adventureNextWavePending.remove(instance);
+        for (UUID id : enemies.getOrDefault(instance, Set.of())) adventureOutsideSince.remove(id);
         adventureCompletedZones.put(instance, index + 1);
         for (Player player : fighters(world)) msg(player, messageText("adventure-unlocked", "&a¡Zona despejada! &fPuedes seguir avanzando."));
     }
@@ -1366,6 +1401,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
         for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
         adventureCompletedZones.remove(name); adventureActiveZone.remove(name); adventureWave.remove(name); adventureNextWavePending.remove(name);
+        // Los UUID de la instancia se limpian junto con los enemigos al terminar.
+        for (UUID id : enemies.getOrDefault(name, Set.of())) adventureOutsideSince.remove(id);
         for (UUID id : new HashSet<>(parkourReturning)) {
             if (name.equals(playingWorld.get(id))) { parkourReturning.remove(id); frozen.remove(id); }
         }
@@ -2026,10 +2063,42 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (!(entity instanceof LivingEntity mob) || mob.isDead()) {
                     active.remove(mobId); protectedMobs.remove(mobId);
                     lostTicks.remove(mobId); lastMobPositions.remove(mobId); enemyTypes.remove(mobId);
+                    adventureOutsideSince.remove(mobId);
                     defeated.merge(name, 1, Integer::sum);
                     continue;
                 }
                 if (elapsed % 2 == 0) updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
+                // En EndlessXL, devolver al enemigo que abandono su zona activa
+                // antes de tres segundos, sin esperar al acecho general del plugin.
+                if (isAdventure(name) && adventureActiveZone.containsKey(name)) {
+                    int zoneIndex = adventureActiveZone.get(name);
+                    List<Encounter> zones = adventureZones(name);
+                    if (zoneIndex >= 0 && zoneIndex < zones.size()) {
+                        Location center = zones.get(zoneIndex).center();
+                        double limit = Math.max(2.0, getConfig().getDouble("adventure.encounter-boundary-blocks", 15));
+                        if (horizontalDistanceSquared(center, mob.getLocation()) > limit * limit) {
+                            long now = System.currentTimeMillis();
+                            long first = adventureOutsideSince.computeIfAbsent(mobId, k -> now);
+                            long wait = Math.min(2500L, Math.max(0L,
+                                    getConfig().getLong("adventure.encounter.mob-return-delay-ticks", 20L) * 50L));
+                            if (now - first >= wait) {
+                                Location safe = nearbySafeLocation(world, center, 0, 4);
+                                if (safe == null && isSafe(world, center.getBlockX(), center.getBlockY(), center.getBlockZ()))
+                                    safe = center.clone();
+                                if (safe != null && mob.teleport(safe)) {
+                                    adventureOutsideSince.remove(mobId);
+                                    lastMobPositions.put(mobId, safe.clone());
+                                    lostTicks.remove(mobId);
+                                    Player nearest = players.stream().min(Comparator.comparingDouble(
+                                            pl -> pl.getLocation().distanceSquared(mob.getLocation()))).orElse(null);
+                                    if (nearest != null && mob instanceof org.bukkit.entity.Mob ai) ai.setTarget(nearest);
+                                }
+                            }
+                            // No usar el sistema global de acecho para este mob fuera de su zona.
+                            continue;
+                        } else adventureOutsideSince.remove(mobId);
+                    }
+                }
                 pursueEnemy(mob, mobId, players, world);
             }
             for (UUID bossId : new HashSet<>(bosses.getOrDefault(name, Set.of()))) {

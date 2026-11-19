@@ -45,3 +45,6 @@ adventure-encounter-wave: '&#FF5555¡Emboscada! &fOleada {wave}/{total}: &#FF555
 adventure-parkour-saved: '&#55FFFFCheckpoint del parkour guardado para futuras partidas.'
 adventure-parkour-return: '&#55FFFF¡Caíste al agua! &fEspera {seconds}s para volver a intentarlo.'
 vote-must-vote: '&eVota una dificultad antes de cerrar este menú.'
+
+# EndlessXL - equipo reunido en una emboscada
+adventure-party-gathered: "&#55CCFFTu equipo inicio una emboscada. &fHas sido reunido con ellos."

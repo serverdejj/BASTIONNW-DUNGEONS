@@ -66,6 +66,12 @@ adventure:
   encounter-boundary-blocks: 15
   mobs-per-player: 4
   encounter:
+    # Al activarse una emboscada, reune al equipo alrededor del centro de la zona.
+    teleport-party-on-start: true
+    # Revision cada segundo; si un mob sale de los 15 bloques, volvera en ~1-2 s.
+    mob-return-delay-ticks: 20
+    # Velocidad base aproximada (en MythicMobs pueden existir modificadores).
+    skeletal-knight-speed: 0.32
     mobs-per-player: 4
     waves: 2
     next-wave-delay-seconds: 0
