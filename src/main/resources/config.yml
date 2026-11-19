@@ -1,184 +1,35 @@
-# BastionMCItemDisplay - Purpur 1.21.11
-# El color del nombre SIEMPRE se toma del nombre original/personalizado del item.
-# Los colores de rareza afectan particulas y etiquetas informativas, no el nombre.
-display:
-  enabled: true
-  height-offset: 0.35
-  scale: 0.65
-  update-ticks: 1
-  max-distance: 32
-  show-amount: true
-  show-single-amount: false
-  amount-format: ' &7x%amount%'
-  background: false
-  shadow: true
-  see-through: false
-  # Si es true, oculta la etiqueta al recoger/desaparecer el item.
-target-info:
-  enabled: true
-  # Segundo holograma solo visible al apuntar, acercarse o agacharse.
-  height-offset: 0.75
-  scale: 0.48
-  proximity-distance: 1.0
-  sneak-distance: 3.0
-  max-distance: 5
-  update-ticks: 5
-  show-name: false
-  show-rarity: true
-  show-enchantments: true
-  show-combat-stats: true
-  show-amount: true
-  line-spacing: 0.17
-  enchantments:
-    scale: 0.32
-    per-line: 2
-    separator: " · "
-  format: '&f%name% &8| %rarity% &8| &b%enchants% &8| &c%stats% &8| &7x%amount%'
-effects:
-  enabled: true
-  colored-glow: true
-  # El brillo de equipos usa el color legacy mas cercano al HEX.
-  # Se aplica en el scoreboard principal y en los scoreboards activos de los jugadores.
-  # Plugins de scoreboard pueden seguir reemplazando los equipos; se reintenta cada update-ticks.
-  update-ticks: 20
-  max-distance: 16
-  particle-count: 3
-rarities:
-  comun:
-    label: '&7COMÚN'
-    color: '#AAAAAA'
-    glowing: false
-    particles: false
-  pococomun:
-    label: '&fPOCO COMÚN'
-    color: '#FFFFFF'
-    glowing: false
-    particles: true
-  raro:
-    label: '&aRARO'
-    color: '#55FF55'
-    glowing: true
-    particles: true
-  muyraro:
-    label: '&9MUY RARO'
-    color: '#5555FF'
-    glowing: true
-    particles: true
-  epico:
-    label: '&5ÉPICO'
-    color: '#AA00AA'
-    glowing: true
-    particles: true
-  legendario:
-    label: '&6LEGENDARIO'
-    color: '#FFAA00'
-    glowing: true
-    particles: true
-  mitico:
-    label: '&cMÍTICO'
-    color: '#FF5555'
-    glowing: true
-    particles: true
-  divino:
-    label: '&dDIVINO'
-    color: '#FF55FF'
-    glowing: true
-    particles: true
-messages:
-  prefix: '&#AA00AA&lBASTION &8» &r'
-  no-item: '&cDebes sostener un objeto en la mano principal.'
-  rarity-set: '&aRareza del objeto establecida: %rarity%'
-  rarity-reset: '&aRareza personalizada eliminada. Se usará la rareza nativa.'
-  invalid-rarity: '&cRareza no válida.'
-  reloaded: '&aConfiguración recargada.'
+# BASTION DUNGEONS 1.2.22: mundos permanentes en plugins/BastionDungeons/worlds/
+# Los spawns se guardan mediante comandos en spawns.yml y mobspawns.yml.
 
-# Traducciones editables. Para encantamientos de otros plugins se usa su clave como respaldo.
-enchantments:
-  use-roman-numerals: true
-  color: '&b'
-  names:
-    sharpness: 'Filo'
-    smite: 'Castigo'
-    bane_of_arthropods: 'Perdición de los artrópodos'
-    knockback: 'Empuje'
-    fire_aspect: 'Aspecto ígneo'
-    looting: 'Saqueo'
-    sweeping_edge: 'Filo arrasador'
-    efficiency: 'Eficiencia'
-    silk_touch: 'Toque de seda'
-    unbreaking: 'Irrompibilidad'
-    fortune: 'Fortuna'
-    power: 'Poder'
-    punch: 'Retroceso'
-    flame: 'Fuego'
-    infinity: 'Infinidad'
-    protection: 'Protección'
-    fire_protection: 'Protección contra el fuego'
-    feather_falling: 'Caída de pluma'
-    blast_protection: 'Protección contra explosiones'
-    projectile_protection: 'Protección contra proyectiles'
-    respiration: 'Respiración'
-    aqua_affinity: 'Afinidad acuática'
-    thorns: 'Espinas'
-    depth_strider: 'Agilidad acuática'
-    frost_walker: 'Paso helado'
-    binding_curse: 'Maldición de ligamiento'
-    vanishing_curse: 'Maldición de desaparición'
-    mending: 'Reparación'
-    swift_sneak: 'Sigilo veloz'
-    soul_speed: 'Velocidad del alma'
-    lure: 'Atracción'
-    luck_of_the_sea: 'Suerte marina'
-    loyalty: 'Lealtad'
-    impaling: 'Empalamiento'
-    riptide: 'Propulsión acuática'
-    channeling: 'Conductividad'
-    multishot: 'Multidisparo'
-    quick_charge: 'Carga rápida'
-    piercing: 'Perforación'
-    density: 'Densidad'
-    breach: 'Brecha'
-    wind_burst: 'Ráfaga de viento'
+# Votación de dificultad (todos votan; empates al azar).
+difficulty:
+  easy:
+    health-multiplier: 0.5
+  normal:
+    health-multiplier: 1.0
+  hard:
+    health-multiplier: 2.0
 
-# ItemStacker 1.1.0 guarda la cantidad agrupada en un contador virtual.
-# Se lee directamente cuando el plugin está instalado; sin ItemStacker se usa Minecraft.
-itemstacker:
+# Cada intervalo se mueve el enemigo más lejano de su jugador más cercano.
+enemy-stalking:
   enabled: true
+  interval-seconds: 10
+  include-bosses: true
+  distance-behind-player: 2.0
 
-# Porcentaje de durabilidad solo para piezas equipables en ranuras de armadura.
-durability-display:
+difficulty-voting:
+  vote-duration-seconds: 20
+  result-seconds: 5
+
+dungeon-protection:
+  block-interactions: true
+  block-breaking: true
+  block-placing: true
+  block-ender-pearls: true
+
+mob-drops:
+  custom-loot-only: true
+
+height-protection:
   enabled: true
-  format: '&7Durabilidad: %color%%percent%%'
-  thresholds:
-    high: 75
-    low: 25
-  colors:
-    high: '&a'
-    medium: '&e'
-    low: '&c'
-
-# Símbolos editables SIN paquete de recursos.
-# No son la textura exacta de la barra de armadura de Minecraft.
-armor-display:
-  enabled: false
-  prefix: '&7Armadura: '
-  show-icons: true
-  show-empty-icons: false
-  show-armor-points: true
-  max-icons: 10
-  icons:
-    full: '■'
-    half: '◧'
-    empty: '□'
-  colors:
-    full: '&7'
-    half: '&7'
-    empty: '&8'
-  # Valores para armaduras especiales si necesitas ajustar su defensa.
-  material-overrides: {}
-attributes:
-  names:
-    attack_damage: 'Daño de ataque'
-    attack_speed: 'Velocidad de ataque'
-    armor_toughness: 'Dureza de armadura'
-    knockback_resistance: 'Resistencia al empuje'
+  max-height-above-spawn: 10
