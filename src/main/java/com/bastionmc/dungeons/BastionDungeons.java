@@ -98,6 +98,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, Integer> teamSizes = new HashMap<>();
     private final Random random = new Random();
     private final Set<UUID> frozen = new HashSet<>();
+    // Efectos optativos del Rey Esqueleto: se aplican solamente a los jefes MythicMobs
+    // controlados por BastionDungeons, nunca a criaturas normales del servidor.
+    private final Set<UUID> kingLanding = new HashSet<>();
+    private final Map<UUID, Long> kingLastLaunch = new HashMap<>();
+
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
     private final Set<UUID> adminFreeMode = new HashSet<>();
@@ -243,7 +248,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
     private long lastAnnouncedOpen = -1L;
 
-    @Override public void onDisable() { saveSchedule(); }
+    @Override public void onDisable() { kingLanding.clear(); kingLastLaunch.clear(); saveSchedule(); }
 
     @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!(sender instanceof Player player)) return List.of();
@@ -782,8 +787,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) return;
             String mobId = getConfig().getString("adventure.boss-id", "SkeletonKing");
             try {
-                LivingEntity boss = spawnMythic(mobId, bossAt);
-                setEnemyHealth(boss, Math.max(1, getConfig().getDouble("adventure.boss-health", 500.0)));
+                LivingEntity boss = spawnEpicBoss(mobId, bossAt,
+                        Math.max(1, getConfig().getDouble("adventure.boss-health", 500.0)), trigger);
                 bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(boss.getUniqueId());
                 enemyTypes.put(boss.getUniqueId(), mobId);
                 updateEnemyName(boss, mobId);
@@ -1399,7 +1404,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
-        for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
+        for (UUID boss : bosses.getOrDefault(name, Set.of())) {
+            protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss);
+            kingLanding.remove(boss); kingLastLaunch.remove(boss);
+        }
         adventureCompletedZones.remove(name); adventureActiveZone.remove(name); adventureWave.remove(name); adventureNextWavePending.remove(name);
         // Los UUID de la instancia se limpian junto con los enemigos al terminar.
         for (UUID id : enemies.getOrDefault(name, Set.of())) adventureOutsideSince.remove(id);
@@ -1595,6 +1603,148 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         // Esperar un tick para leer la vida DESPUES del daño aplicado por Bukkit/MythicMobs.
         Bukkit.getScheduler().runTask(this, () -> {
             if (mob.isValid() && !mob.isDead()) updateEnemyName(mob, type);
+        });
+    }
+
+    /**
+     * Entrada de jefe de MythicMobs. No altera su ID, las habilidades, los drops ni
+     * la lógica de victoria ya existentes. El PNG es procesado por LibsDisguises:
+     * se configura la skin registrada, no una URL ni un PNG sin registrar.
+     */
+    private LivingEntity spawnEpicBoss(String mobId, Location spawn, double health, Player target) throws Exception {
+        boolean king = mobId.equalsIgnoreCase("SkeletonKing") || mobId.equalsIgnoreCase("SkeletolKing");
+        boolean enabled = king && getConfig().getBoolean("boss-effects.enabled", true);
+        Location landing = spawn.clone();
+        double drop = enabled ? Math.max(0, Math.min(20, getConfig().getDouble("boss-effects.entrance.drop-blocks", 10))) : 0;
+        Location at = landing.clone().add(0, drop, 0);
+        LivingEntity boss = spawnMythic(mobId, at);
+        setEnemyHealth(boss, health);
+        if (enabled) {
+            double scale = Math.max(0.5, Math.min(4.0, getConfig().getDouble("boss-effects.scale", 3.0)));
+            var scaleAttribute = boss.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+            if (scaleAttribute != null) scaleAttribute.setBaseValue(scale);
+            applyKingSkin(boss);
+            if (drop > 0.1) {
+                kingLanding.add(boss.getUniqueId());
+                boss.setInvulnerable(true);
+                boss.setGravity(true);
+                boss.setVelocity(new org.bukkit.util.Vector(0, -0.42, 0));
+                Bukkit.getScheduler().runTaskTimer(this, new java.util.function.Consumer<org.bukkit.scheduler.BukkitTask>() {
+                    int ticks = 0;
+                    @Override public void accept(org.bukkit.scheduler.BukkitTask task) {
+                        if (!boss.isValid() || boss.isDead() || !boss.getWorld().equals(landing.getWorld())) {
+                            kingLanding.remove(boss.getUniqueId()); task.cancel(); return;
+                        }
+                        ticks += 2;
+                        if (!boss.isOnGround() && ticks < 100) {
+                            boss.setFallDistance(0);
+                            boss.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, boss.getLocation(), 5, .5, .3, .5, .02);
+                            return;
+                        }
+                        if (ticks >= 100 && !boss.isOnGround()) boss.teleport(landing);
+                        kingLanding.remove(boss.getUniqueId());
+                        boss.setFallDistance(0);
+                        boss.setInvulnerable(false);
+                        kingImpact(boss.getLocation());
+                        if (boss instanceof org.bukkit.entity.Mob attacker && target != null && target.isOnline()
+                                && target.getWorld().equals(boss.getWorld())) attacker.setTarget(target);
+                        task.cancel();
+                    }
+                }, 2L, 2L);
+            }
+            startKingTeleport(boss);
+        }
+        return boss;
+    }
+
+    private void kingImpact(Location pos) {
+        World world = pos.getWorld();
+        if (world == null) return;
+        world.spawnParticle(Particle.EXPLOSION, pos.clone().add(0, 1, 0), 3, .5, .3, .5, .01);
+        world.spawnParticle(Particle.SOUL_FIRE_FLAME, pos.clone().add(0, 0.4, 0), 75, 2, .25, 2, .07);
+        world.spawnParticle(Particle.SMOKE, pos.clone().add(0, .6, 0), 55, 2, .35, 2, .03);
+        world.playSound(pos, Sound.ENTITY_GENERIC_EXPLODE, 1.8f, 0.65f);
+        world.playSound(pos, Sound.ENTITY_WARDEN_SONIC_BOOM, 1.0f, .7f);
+        double radius = Math.max(0, getConfig().getDouble("boss-effects.entrance.impact-knockback-radius", 3.5));
+        for (Player player : fighters(world)) {
+            if (player.getLocation().distanceSquared(pos) > radius * radius) continue;
+            org.bukkit.util.Vector push = player.getLocation().toVector().subtract(pos.toVector()).setY(0);
+            if (push.lengthSquared() < .01) push = new org.bukkit.util.Vector(1, 0, 0);
+            player.setVelocity(push.normalize().multiply(.8).setY(.65));
+        }
+    }
+
+    private void applyKingSkin(LivingEntity boss) {
+        if (!getConfig().getBoolean("boss-effects.skin.enabled", true)) return;
+        if (!Bukkit.getPluginManager().isPluginEnabled("LibsDisguises")) {
+            getLogger().warning("SkeletolKing: LibsDisguises no está activo. El jefe seguirá siendo MythicMob."); return;
+        }
+        String skin = getConfig().getString("boss-effects.skin.registered-name", "BastionKingSkin");
+        if (skin == null || skin.isBlank()) return;
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (!boss.isValid() || boss.isDead()) return;
+            try {
+                Class<?> playerDisguiseType = Class.forName("me.libraryaddict.disguise.disguisetypes.PlayerDisguise");
+                Object disguise = playerDisguiseType.getConstructor(String.class).newInstance("SkeletolKing");
+                playerDisguiseType.getMethod("setSkin", String.class).invoke(disguise, skin);
+                Class<?> disguiseType = Class.forName("me.libraryaddict.disguise.disguisetypes.Disguise");
+                Class<?> api = Class.forName("me.libraryaddict.disguise.DisguiseAPI");
+                api.getMethod("disguiseToAll", Entity.class, disguiseType).invoke(null, boss, disguise);
+            } catch (Exception ex) {
+                getLogger().warning("No fue posible aplicar la skin '" + skin + "': " + ex.getMessage()
+                        + ". Comprueba /grabskin y la versión de LibsDisguises.");
+            }
+        }, 5L);
+    }
+
+    private void startKingTeleport(LivingEntity boss) {
+        if (!getConfig().getBoolean("boss-effects.teleport.enabled", true)) return;
+        int interval = Math.max(60, getConfig().getInt("boss-effects.teleport.interval-ticks", 180));
+        Bukkit.getScheduler().runTaskTimer(this, new java.util.function.Consumer<org.bukkit.scheduler.BukkitTask>() {
+            @Override public void accept(org.bukkit.scheduler.BukkitTask task) {
+                if (!boss.isValid() || boss.isDead() || !instanceWorlds.contains(boss.getWorld().getName())) {
+                    task.cancel(); return;
+                }
+                if (kingLanding.contains(boss.getUniqueId())) return;
+                if (random.nextDouble() > Math.max(0, Math.min(1, getConfig().getDouble("boss-effects.teleport.chance", .40)))) return;
+                List<Player> players = fighters(boss.getWorld());
+                if (players.isEmpty()) return;
+                Player target = players.get(random.nextInt(players.size()));
+                org.bukkit.util.Vector facing = target.getLocation().getDirection().setY(0);
+                if (facing.lengthSquared() < .01) return;
+                double distance = Math.max(1.5, getConfig().getDouble("boss-effects.teleport.behind-distance", 3.5));
+                Location behind = target.getLocation().clone().subtract(facing.normalize().multiply(distance));
+                if (!isSafe(behind.getWorld(), behind.getBlockX(), behind.getBlockY(), behind.getBlockZ())) return;
+                behind.setDirection(target.getLocation().toVector().subtract(behind.toVector()));
+                boss.getWorld().spawnParticle(Particle.PORTAL, boss.getLocation().add(0, 1, 0), 36, .5, .9, .5, .3);
+                boss.teleport(behind);
+                boss.getWorld().spawnParticle(Particle.PORTAL, behind.clone().add(0, 1, 0), 36, .5, .9, .5, .3);
+                boss.getWorld().playSound(behind, Sound.ENTITY_ENDERMAN_TELEPORT, 1f, .75f);
+                if (boss instanceof org.bukkit.entity.Mob attacker) attacker.setTarget(target);
+            }
+        }, interval, interval);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onKingMeleeHit(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player victim)) return;
+        if (!(event.getDamager() instanceof LivingEntity boss)) return;
+        if (!bosses.getOrDefault(boss.getWorld().getName(), Set.of()).contains(boss.getUniqueId())) return;
+        if (kingLanding.contains(boss.getUniqueId())) return;
+        if (!getConfig().getBoolean("boss-effects.launch.enabled", true)) return;
+        long now = System.currentTimeMillis();
+        long last = kingLastLaunch.getOrDefault(boss.getUniqueId(), 0L);
+        long cooldown = Math.max(250, getConfig().getLong("boss-effects.launch.cooldown-ms", 2500));
+        if (now - last < cooldown) return;
+        kingLastLaunch.put(boss.getUniqueId(), now);
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (!victim.isOnline() || victim.isDead() || !victim.getWorld().equals(boss.getWorld())) return;
+            org.bukkit.util.Vector away = victim.getLocation().toVector().subtract(boss.getLocation().toVector()).setY(0);
+            if (away.lengthSquared() < .01) away = victim.getLocation().getDirection();
+            away.normalize().multiply(getConfig().getDouble("boss-effects.launch.horizontal", 1.1));
+            away.setY(getConfig().getDouble("boss-effects.launch.vertical", .8));
+            victim.setVelocity(away);
+            victim.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, victim.getLocation(), 14, .3, .6, .3, .05);
         });
     }
 
@@ -2129,8 +2279,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             Location loc = enemySpawnLocation(world, players.get(i % players.size()).getLocation());
             if (loc == null) { getLogger().warning("No hay lugar para SkeletonKing en " + name); continue; }
             try {
-                LivingEntity boss = spawnMythic("SkeletonKing", loc);
-                setEnemyHealth(boss, 500);
+                LivingEntity boss = spawnEpicBoss("SkeletonKing", loc, 500,
+                        fighters(world).isEmpty() ? null : fighters(world).get(0));
                 spawnedBosses.add(boss.getUniqueId());
                 updateEnemyName(boss, "SkeletonKing");
             } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
@@ -2155,6 +2305,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             rollLoot(event, deadType);
         }
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
+        kingLanding.remove(dead); kingLastLaunch.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;
         boolean removedEnemy = active.remove(dead);

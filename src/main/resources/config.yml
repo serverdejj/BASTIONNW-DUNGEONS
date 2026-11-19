@@ -87,3 +87,28 @@ adventure:
   boss-id: 'SkeletonKing'
   boss-health: 500.0
   boss-radius-blocks: 100
+
+# Jefe SkeletonKing / SkeletolKing: efectos especiales sin romper bloques.
+# Se aplican a los jefes invocados por Dungeons; no a mobs sueltos de Survival.
+boss-effects:
+  enabled: true
+  # 3 = triple altura del mob base. En disfraces de jugador el tamaño visible
+  # depende de la versión de LibsDisguises (puede ignorar la escala).
+  scale: 3.0
+  skin:
+    enabled: true
+    # Antes registra la skin con LibsDisguises; instrucciones en README.
+    registered-name: 'BastionKingSkin'
+  entrance:
+    drop-blocks: 10
+    impact-knockback-radius: 3.5
+  launch:
+    enabled: true
+    horizontal: 1.1
+    vertical: 0.8
+    cooldown-ms: 2500
+  teleport:
+    enabled: true
+    interval-ticks: 180
+    chance: 0.40
+    behind-distance: 3.5

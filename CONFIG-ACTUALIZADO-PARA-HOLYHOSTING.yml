@@ -1,0 +1,86 @@
+# Copia de la ultima configuracion del usuario con boss-effects agregados.
+# Respaldar el config del servidor antes de reemplazarlo.
+difficulty:
+  easy:
+    health-multiplier: 0.5
+  normal:
+    health-multiplier: 1.0
+  hard:
+    health-multiplier: 2.0
+enemy-stalking:
+  enabled: true
+  interval-seconds: 10
+  include-bosses: true
+  distance-behind-player: 2.0
+difficulty-voting:
+  vote-duration-seconds: 20
+  result-seconds: 5
+  require-vote-before-close: true
+dungeon-protection:
+  block-interactions: true
+  block-breaking: true
+  block-placing: true
+  block-ender-pearls: true
+mob-drops:
+  custom-loot-only: true
+height-protection:
+  enabled: true
+  max-height-above-spawn: 10
+dungeon-mobs:
+  block-natural-spawns: true
+  allow-other-custom-spawns: false
+map-rules:
+  defaults:
+    radius-blocks: 33
+  maps:
+    netherybreis:
+      radius-blocks: 67
+      below-spawn:
+        enabled: true
+        blocks: 20
+        damage: 1000.0
+        force-death-if-survives: true
+adventure:
+  enabled: true
+  map: dungeon1-endlessxl
+  travel-radius-blocks: 256
+  encounter-boundary-blocks: 15
+  mobs-per-player: 4
+  encounter:
+    mobs-per-player: 4
+    waves: 2
+    next-wave-delay-seconds: 0
+    teleport-party-on-start: true
+    mob-return-delay-ticks: 20
+    skeletal-knight-speed: 0.32
+  leaves:
+    prevent-decay: true
+  parkour:
+    enabled: true
+    water-detection-radius-blocks: 40
+    freeze-seconds: 5
+  mob-ids:
+  - SkeletalMinion
+  - SkeletalKnight
+  boss-id: SkeletonKing
+  boss-health: 500.0
+  boss-radius-blocks: 100
+boss-effects:
+  enabled: true
+  scale: 3.0
+  skin:
+    enabled: true
+    registered-name: BastionKingSkin
+  entrance:
+    drop-blocks: 10
+    impact-knockback-radius: 3.5
+  launch:
+    enabled: true
+    horizontal: 1.1
+    vertical: 0.8
+    cooldown-ms: 2500
+  teleport:
+    enabled: true
+    interval-ticks: 180
+    chance: 0.4
+    behind-distance: 3.5
