@@ -20,6 +20,7 @@ enemy-stalking:
 difficulty-voting:
   vote-duration-seconds: 20
   result-seconds: 5
+  require-vote-before-close: true
 
 dungeon-protection:
   block-interactions: true
@@ -63,7 +64,17 @@ adventure:
   map: 'dungeon1-endlessxl'
   travel-radius-blocks: 256
   encounter-boundary-blocks: 15
-  mobs-per-player: 3
+  mobs-per-player: 4
+  encounter:
+    mobs-per-player: 4
+    waves: 2
+    next-wave-delay-seconds: 0
+  leaves:
+    prevent-decay: true
+  parkour:
+    enabled: true
+    water-detection-radius-blocks: 40
+    freeze-seconds: 5
   mob-ids:
     - 'SkeletalMinion'
     - 'SkeletalKnight'

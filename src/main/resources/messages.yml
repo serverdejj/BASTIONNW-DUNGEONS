@@ -39,3 +39,9 @@ adventure-boss-title: '&#9640FC&l¡JEFE FINAL!'
 adventure-boss-subtitle: '&fAparece en 5 segundos...'
 adventure-boss-appeared: '&#9650FF&l¡JEFE INVOCADO! &fDerrótalo para ganar.'
 adventure-no-boss-spawn: '&cConfigura el spawn del jefe con /dungeon boss spawn.'
+
+# Modo aventura EndlessXL
+adventure-encounter-wave: '&#FF5555¡Emboscada! &fOleada {wave}/{total}: &#FF5555{count} &fenemigos.'
+adventure-parkour-saved: '&#55FFFFCheckpoint del parkour guardado para futuras partidas.'
+adventure-parkour-return: '&#55FFFF¡Caíste al agua! &fEspera {seconds}s para volver a intentarlo.'
+vote-must-vote: '&eVota una dificultad antes de cerrar este menú.'

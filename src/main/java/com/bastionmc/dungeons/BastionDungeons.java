@@ -20,6 +20,9 @@ import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
 import org.bukkit.event.entity.EntityExplodeEvent;
 import org.bukkit.event.block.BlockBreakEvent;
+import org.bukkit.event.block.LeavesDecayEvent;
+import org.bukkit.event.inventory.InventoryCloseEvent;
+import org.bukkit.block.Block;
 import org.bukkit.event.block.BlockPlaceEvent;
 import org.bukkit.event.block.BlockIgniteEvent;
 import org.bukkit.event.block.BlockExplodeEvent;
@@ -80,6 +83,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private record Encounter(Location center, double radius) {}
     private final Map<String, Integer> adventureCompletedZones = new HashMap<>();
     private final Map<String, Integer> adventureActiveZone = new HashMap<>();
+    private final Map<String, Integer> adventureWave = new HashMap<>();
+    private final Set<String> adventureNextWavePending = new HashSet<>();
+    private final Set<UUID> parkourReturning = new HashSet<>();
     private final Set<String> adventureBossStarted = new HashSet<>();
     private final Map<String, Location> adventureBossCenters = new HashMap<>();
     private final Set<String> adventureReady = new HashSet<>();
@@ -251,6 +257,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             options.add("map");
             for (File f : availableMaps()) options.add(mapId(f));
         }
+        else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("setspawn")) options.add("parkour");
         else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 3 && args[1].equalsIgnoreCase("map")) {
             for (File f : availableMaps()) options.add(mapId(f));
         }
@@ -598,15 +605,70 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
+    // Checkpoint del parkour exclusivo del schematic de aventura. El radio evita
+    // que otras masas de agua del mapa activen el retorno por accidente.
+    private boolean parkourWaterCheck(Player player, String instance, Location destination) {
+        if (destination == null || destination.getWorld() == null || !getConfig().getBoolean("adventure.parkour.enabled", true)) return false;
+        if (parkourReturning.contains(player.getUniqueId())) return false;
+        String base = adventurePath(instance);
+        if (base == null) return false;
+        var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        Location checkpoint = parseLocation(destination.getWorld(), data.getString(base + ".parkour.spawn", ""));
+        if (checkpoint == null) return false;
+        double radius = Math.max(1.0, getConfig().getDouble("adventure.parkour.water-detection-radius-blocks", 40.0));
+        if (destination.distanceSquared(checkpoint) > radius * radius) return false;
+        Block feet = destination.getBlock();
+        if (feet.getType() != Material.WATER && feet.getRelative(org.bukkit.block.BlockFace.DOWN).getType() != Material.WATER) return false;
+        UUID id = player.getUniqueId();
+        parkourReturning.add(id);
+        checkpoint.setYaw((float) data.getDouble(base + ".parkour.yaw", 0));
+        checkpoint.setPitch((float) data.getDouble(base + ".parkour.pitch", 0));
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (!player.isOnline() || !instance.equals(playingWorld.get(id))) { parkourReturning.remove(id); return; }
+            player.setFallDistance(0);
+            player.teleport(checkpoint);
+            frozen.add(id);
+            int seconds = Math.max(1, getConfig().getInt("adventure.parkour.freeze-seconds", 5));
+            msg(player, messageText("adventure-parkour-return", "&b¡Caíste al agua! &fEspera {seconds}s para volver a intentarlo.")
+                    .replace("{seconds}", String.valueOf(seconds)));
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                parkourReturning.remove(id);
+                // No levantar una congelación de jefe si comenzó entretanto.
+                if (!adventureBossStarted.contains(instance)) frozen.remove(id);
+            }, 20L * seconds);
+        });
+        return true;
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onAdventureLeavesDecay(LeavesDecayEvent event) {
+        String instance = event.getBlock().getWorld().getName();
+        if (instanceWorlds.contains(instance) && isAdventure(instance)
+                && getConfig().getBoolean("adventure.leaves.prevent-decay", true)) event.setCancelled(true);
+    }
+
     private void startAdventureEncounter(World world, int index, Encounter zone) {
         String instance = world.getName();
         if (adventureActiveZone.containsKey(instance) || adventureBossStarted.contains(instance)) return;
-        int perPlayer = Math.max(1, getConfig().getInt("adventure.mobs-per-player", 3));
-        int count = Math.min(40, perPlayer * Math.max(1, fighters(world).size()));
+        adventureActiveZone.put(instance, index);
+        adventureWave.put(instance, 1);
+        if (!spawnAdventureWave(world, zone, 1)) {
+            adventureActiveZone.remove(instance);
+            adventureWave.remove(instance);
+            for (Player player : fighters(world)) msg(player, messageText("adventure-no-mobs", "&cNo se pudo iniciar el encuentro: no hay spawns seguros o MythicMobs falló."));
+        }
+    }
+
+    private boolean spawnAdventureWave(World world, Encounter zone, int wave) {
+        String instance = world.getName();
+        int perPlayer = Math.max(1, getConfig().getInt("adventure.encounter.mobs-per-player",
+                getConfig().getInt("adventure.mobs-per-player", 4)));
+        int count = Math.min(64, perPlayer * Math.max(1, teamSizes.getOrDefault(instance, fighters(world).size())));
         Set<UUID> active = enemies.computeIfAbsent(instance, k -> new HashSet<>());
         String[] types = getConfig().getStringList("adventure.mob-ids").toArray(new String[0]);
         if (types.length == 0) types = new String[]{"SkeletalMinion", "SkeletalKnight"};
-        for (int attempt = 0; attempt < count * 14 && active.size() < count; attempt++) {
+        int spawned = 0;
+        for (int attempt = 0; attempt < count * 14 && spawned < count; attempt++) {
             Location pos = nearbySafeLocation(world, zone.center(), 2, Math.max(3, Math.min(8, (int) zone.radius())));
             if (pos == null) continue;
             String mobId = types[random.nextInt(types.length)];
@@ -615,21 +677,53 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
                 active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
-            } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo crear mob de encuentro: " + mobId, ex); break; }
+                spawned++;
+            } catch (Exception ex) {
+                getLogger().log(java.util.logging.Level.WARNING, "No se pudo crear mob de encuentro: " + mobId, ex);
+                break;
+            }
         }
-        if (active.isEmpty()) {
-            for (Player player : fighters(world)) msg(player, messageText("adventure-no-mobs", "&cNo se pudo iniciar el encuentro: no hay spawns seguros o MythicMobs falló."));
-            return; // No bloquear permanentemente el avance sin enemigos.
-        }
-        adventureActiveZone.put(instance, index);
-        for (Player player : fighters(world)) msg(player, messageText("adventure-encounter", "&c¡Emboscada! &fElimina a todos los enemigos para avanzar."));
+        if (spawned > 0) for (Player player : fighters(world))
+            msg(player, messageText("adventure-encounter-wave", "&c¡Emboscada! &fOleada {wave}/{total}: &c{count} &fenemigos.")
+                    .replace("{wave}", "" + wave)
+                    .replace("{total}", "" + Math.max(1, getConfig().getInt("adventure.encounter.waves", 2)))
+                    .replace("{count}", "" + spawned));
+        return spawned > 0;
     }
 
     private void completeAdventureEncounter(World world) {
         String instance = world.getName();
-        Integer current = adventureActiveZone.remove(instance);
-        if (current == null) return;
-        adventureCompletedZones.put(instance, current + 1);
+        Integer current = adventureActiveZone.get(instance);
+        if (current == null || adventureNextWavePending.contains(instance) || !enemies.getOrDefault(instance, Set.of()).isEmpty()) return;
+        int wave = adventureWave.getOrDefault(instance, 1);
+        int totalWaves = Math.max(1, getConfig().getInt("adventure.encounter.waves", 2));
+        if (wave < totalWaves) {
+            adventureWave.put(instance, wave + 1);
+            adventureNextWavePending.add(instance);
+            int delay = Math.max(0, getConfig().getInt("adventure.encounter.next-wave-delay-seconds", 0));
+            // Impedir activaciones dobles mientras llega la siguiente oleada.
+            Bukkit.getScheduler().runTaskLater(this, () -> {
+                if (!instanceWorlds.contains(instance) || finishing.contains(instance)
+                        || !Objects.equals(adventureActiveZone.get(instance), current)) { adventureNextWavePending.remove(instance); return; }
+                if (!enemies.getOrDefault(instance, Set.of()).isEmpty()) { adventureNextWavePending.remove(instance); return; }
+                List<Encounter> zones = adventureZones(instance);
+                boolean success = current < zones.size() && spawnAdventureWave(world, zones.get(current), wave + 1);
+                adventureNextWavePending.remove(instance);
+                if (!success) {
+                    getLogger().warning("No se pudieron generar enemigos de la oleada " + (wave + 1) + " en " + instance);
+                    finishAdventureEncounter(world, current);
+                }
+            }, 1L + delay * 20L);
+            return;
+        }
+        finishAdventureEncounter(world, current);
+    }
+
+    private void finishAdventureEncounter(World world, int index) {
+        String instance = world.getName();
+        if (!Objects.equals(adventureActiveZone.get(instance), index)) return;
+        adventureActiveZone.remove(instance); adventureWave.remove(instance); adventureNextWavePending.remove(instance);
+        adventureCompletedZones.put(instance, index + 1);
         for (Player player : fighters(world)) msg(player, messageText("adventure-unlocked", "&a¡Zona despejada! &fPuedes seguir avanzando."));
     }
 
@@ -722,6 +816,25 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             cfg.set(path, points);
             try { cfg.save(mobSpawnFile); msg(p, "Punto de enemigos #" + points.size() + " guardado para " + schematicNames.get(instance) + "."); }
             catch (IOException ex) { msg(p, "No se pudo guardar el punto."); getLogger().warning(ex.getMessage()); }
+            return true;
+        }
+        if (args[0].equalsIgnoreCase("setspawn") && args.length == 2 && args[1].equalsIgnoreCase("parkour")) {
+            if (!p.isOp()) { msg(p, messageText("adventure-admin-denied", "&cSolo administradores OP.")); return true; }
+            String instance = playingWorld.get(id);
+            if (instance == null || !instance.equals(p.getWorld().getName()) || !isAdventure(instance)) {
+                msg(p, messageText("adventure-wrong-map", "&cDebes estar dentro de dungeon1-endlessxl.")); return true;
+            }
+            Location loc = p.getLocation();
+            if (!isSafe(loc.getWorld(), loc.getBlockX(), loc.getBlockY(), loc.getBlockZ())) {
+                msg(p, "&cEl checkpoint necesita un bloque de suelo firme y espacio libre para el jugador."); return true;
+            }
+            String base = adventurePath(instance);
+            var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+            data.set(base + ".parkour.spawn", locationData(loc));
+            data.set(base + ".parkour.yaw", (double) loc.getYaw());
+            data.set(base + ".parkour.pitch", (double) loc.getPitch());
+            try { data.save(adventureFile); msg(p, messageText("adventure-parkour-saved", "&bCheckpoint del parkour guardado para futuras partidas.")); }
+            catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando checkpoint del parkour", ex); msg(p, "&cNo se pudo guardar adventure.yml."); }
             return true;
         }
         if (args[0].equalsIgnoreCase("setspawn")) {
@@ -952,6 +1065,24 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             Player member = Bukkit.getPlayer(id);
             if (member != null && member.getOpenInventory().getTitle().equals(voteTitle())) updateVoteMenu(member, session);
         }
+    }
+
+    // Esc/E cierran el inventario en el cliente. Reabrir al siguiente tick
+    // solo a quien no haya votado, mientras la votación siga activa.
+    @EventHandler public void onVoteClose(InventoryCloseEvent event) {
+        if (!event.getView().getTitle().equals(voteTitle()) || !(event.getPlayer() instanceof Player player)) return;
+        UUID id = player.getUniqueId();
+        VoteSession session = voterSessions.get(id);
+        if (session == null || session.results || session.votes.containsKey(id)
+                || !getConfig().getBoolean("difficulty-voting.require-vote-before-close", true)) return;
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (player.isOnline() && voterSessions.get(id) == session
+                    && !session.results && !session.votes.containsKey(id)
+                    && !player.getOpenInventory().getTitle().equals(voteTitle())) {
+                showVoteMenu(player, session);
+                msg(player, messageText("vote-must-vote", "&eElige una dificultad antes de cerrar este menú."));
+            }
+        }, 1L);
     }
 
     @EventHandler public void onVoteDrag(org.bukkit.event.inventory.InventoryDragEvent e) {
@@ -1234,7 +1365,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
         for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
-        adventureCompletedZones.remove(name); adventureActiveZone.remove(name);
+        adventureCompletedZones.remove(name); adventureActiveZone.remove(name); adventureWave.remove(name); adventureNextWavePending.remove(name);
+        for (UUID id : new HashSet<>(parkourReturning)) {
+            if (name.equals(playingWorld.get(id))) { parkourReturning.remove(id); frozen.remove(id); }
+        }
         adventureBossStarted.remove(name); adventureBossCenters.remove(name); adventureReady.remove(name);
         bosses.remove(name); rounds.remove(name); roundTransitioning.remove(name);
         enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
@@ -1543,6 +1677,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     return;
                 }
             }
+        }
+        if (instance != null && isAdventure(instance) && adventureReady.contains(instance)
+                && !finishing.contains(instance) && player.getGameMode() != GameMode.SPECTATOR
+                && parkourWaterCheck(player, instance, event.getTo())) {
+            event.setTo(event.getFrom());
+            return;
         }
         if (instance != null && isAdventure(instance) && adventureReady.contains(instance)
                 && !finishing.contains(instance) && !adventureBossStarted.contains(instance)
@@ -2002,6 +2142,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
         adminBreakMode.remove(e.getPlayer().getUniqueId());
+        parkourReturning.remove(e.getPlayer().getUniqueId());
         adminFreeMode.remove(e.getPlayer().getUniqueId());
         VoteSession session = voterSessions.get(e.getPlayer().getUniqueId());
         if (session != null) cancelVote(session, "Votación cancelada: un jugador se desconectó.");
