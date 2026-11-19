@@ -75,6 +75,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Set<UUID> awaitingDungeonRespawn = new HashSet<>();
     private final Set<String> instanceWorlds = new HashSet<>();
     private int mythicSpawnDepth = 0;
+    // Progresion de aventura: estado por instancia, configuracion persistente por schematic.
+    private final File adventureFile = new File(getDataFolder(), "adventure.yml");
+    private record Encounter(Location center, double radius) {}
+    private final Map<String, Integer> adventureCompletedZones = new HashMap<>();
+    private final Map<String, Integer> adventureActiveZone = new HashMap<>();
+    private final Set<String> adventureBossStarted = new HashSet<>();
+    private final Map<String, Location> adventureBossCenters = new HashMap<>();
+    private final Set<String> adventureReady = new HashSet<>();
     private final Map<String, Set<UUID>> enemies = new HashMap<>();
     private final Map<UUID, String> enemyTypes = new HashMap<>();
     private final Map<String, Set<UUID>> bosses = new HashMap<>();
@@ -235,7 +243,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<String> options = new ArrayList<>();
         if (args.length == 1) {
             options.addAll(List.of("party", "go", "leave"));
-            if (player.isOp()) options.addAll(List.of("loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre"));
+            if (player.isOp()) options.addAll(List.of("loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "boss"));
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
@@ -246,6 +254,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 3 && args[1].equalsIgnoreCase("map")) {
             for (File f : availableMaps()) options.add(mapId(f));
         }
+        else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("mobs")) options.addAll(List.of("radio", "list", "clear"));
+        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("mobs") && args[1].equalsIgnoreCase("radio")) options.addAll(List.of("5", "10", "15", "20"));
+        else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("boss")) options.addAll(List.of("bloque", "spawn", "list", "clear"));
+        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("boss") && args[1].equalsIgnoreCase("clear")) options.addAll(List.of("bloques", "spawn"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("add", "list", "remove"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
         else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("loot")) {
@@ -328,7 +340,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         for (Player p : Bukkit.getOnlinePlayers()) if (leader(p.getUniqueId()).equals(leader)) result.add(p);
         return result;
     }
-    private void msg(Player p, String text) { p.sendMessage(ChatColor.GOLD + "[BASTION] " + ChatColor.WHITE + text); }
+    private void msg(Player p, String text) { p.sendMessage(ChatColor.GOLD + "[BASTION] " + ChatColor.WHITE + format(text)); }
 
     private String prefix() {
         String[] colors = {"#9400FF", "#9711FF", "#9B22FF", "#9E32FF", "#A143FF", "#9E32FF", "#9B22FF", "#9711FF", "#9400FF"};
@@ -433,6 +445,230 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         });
     }
 
+
+    // El modo aventura se identifica por nombre exacto del schematic, no por el nombre temporal bd_*.
+    private boolean isAdventure(String instance) {
+        String schematic = schematicNames.get(instance);
+        if (schematic == null) return false;
+        String id = schematic.toLowerCase(Locale.ROOT).replaceFirst("\\.schem$", "");
+        return getConfig().getBoolean("adventure.enabled", true)
+                && id.equalsIgnoreCase(getConfig().getString("adventure.map", "dungeon1-endlessxl"));
+    }
+
+    private String adventurePath(String instance) {
+        String name = schematicNames.get(instance);
+        if (name == null) return null;
+        return "maps." + name.toLowerCase(Locale.ROOT).replaceFirst("\\.schem$", "").replace('.', '_');
+    }
+
+    private String locationData(Location loc) {
+        return String.format(Locale.ROOT, "%.3f,%.3f,%.3f", loc.getX(), loc.getY() - PASTE_Y, loc.getZ());
+    }
+
+    private Location parseLocation(World world, String raw) {
+        try {
+            String[] arr = raw.split(",");
+            if (arr.length != 3) return null;
+            return new Location(world, Double.parseDouble(arr[0]), Double.parseDouble(arr[1]) + PASTE_Y, Double.parseDouble(arr[2]));
+        } catch (RuntimeException ignored) { return null; }
+    }
+
+    private List<Encounter> adventureZones(String instance) {
+        String base = adventurePath(instance);
+        if (base == null) return List.of();
+        var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        World world = Bukkit.getWorld(instance);
+        if (world == null) return List.of();
+        List<Encounter> result = new ArrayList<>();
+        for (String zone : data.getStringList(base + ".zones")) {
+            String[] parts = zone.split(";");
+            if (parts.length != 2) continue;
+            Location point = parseLocation(world, parts[0]);
+            if (point == null) continue;
+            try { result.add(new Encounter(point, Math.max(1, Double.parseDouble(parts[1])))); }
+            catch (NumberFormatException ignored) {}
+        }
+        return result;
+    }
+
+    private Location adventureBossLocation(String instance) {
+        String base = adventurePath(instance);
+        if (base == null) return null;
+        return parseLocation(Bukkit.getWorld(instance), org.bukkit.configuration.file.YamlConfiguration
+                .loadConfiguration(adventureFile).getString(base + ".boss.spawn", ""));
+    }
+
+    private boolean adventureCommand(Player player, String[] args) {
+        if (!player.isOp()) { msg(player, messageText("adventure-admin-denied", "&cSolo los administradores OP pueden configurar la aventura.")); return true; }
+        String instance = playingWorld.get(player.getUniqueId());
+        if (instance == null || !instance.equals(player.getWorld().getName()) || !isAdventure(instance)) {
+            msg(player, messageText("adventure-wrong-map", "&cDebes estar dentro de una partida de dungeon1-endlessxl.")); return true;
+        }
+        String base = adventurePath(instance);
+        var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        if (args[0].equalsIgnoreCase("mobs")) {
+            if (args.length == 3 && args[1].equalsIgnoreCase("radio")) {
+                double radius;
+                try { radius = Double.parseDouble(args[2]); } catch (NumberFormatException ex) { msg(player, "&cRadio invalido. Ejemplo: /dungeon mobs radio 10"); return true; }
+                if (!Double.isFinite(radius) || radius < 1 || radius > 100) { msg(player, "&cRadio permitido: 1 a 100 bloques."); return true; }
+                List<String> zones = new ArrayList<>(data.getStringList(base + ".zones"));
+                zones.add(locationData(player.getLocation()) + ";" + radius);
+                data.set(base + ".zones", zones);
+                msg(player, messageText("adventure-zone-saved", "&aZona de enemigos #{number} guardada; radio {radius} bloques.")
+                        .replace("{number}", "" + zones.size()).replace("{radius}", "" + radius));
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("clear")) {
+                data.set(base + ".zones", null);
+                msg(player, messageText("adventure-zones-cleared", "&eZonas de enemigos eliminadas de este mapa."));
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("list")) {
+                msg(player, "&bZonas de enemigos: &f" + data.getStringList(base + ".zones").size()); return true;
+            } else { msg(player, "&e/dungeon mobs radio <1-100> | list | clear"); return true; }
+        } else if (args[0].equalsIgnoreCase("boss")) {
+            if (args.length == 2 && args[1].equalsIgnoreCase("bloque")) {
+                // Marcar el bloque bajo los pies del OP. Maximo 3 activadores.
+                Location ground = player.getLocation().getBlock().getRelative(org.bukkit.block.BlockFace.DOWN).getLocation();
+                String marker = ground.getBlockX() + "," + (ground.getBlockY() - PASTE_Y) + "," + ground.getBlockZ();
+                List<String> blocks = new ArrayList<>(data.getStringList(base + ".boss.blocks"));
+                if (blocks.contains(marker)) { msg(player, "&eEste bloque ya es un activador."); return true; }
+                if (blocks.size() >= 3) { msg(player, "&cYa hay 3 bloques. Usa /dungeon boss clear bloques para reiniciarlos."); return true; }
+                blocks.add(marker);
+                data.set(base + ".boss.blocks", blocks);
+                msg(player, messageText("adventure-boss-block", "&aBloque activador del jefe: &f{number}/3").replace("{number}", "" + blocks.size()));
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("spawn")) {
+                if (!isSafe(player.getWorld(), player.getLocation().getBlockX(), player.getLocation().getBlockY(), player.getLocation().getBlockZ())) {
+                    msg(player, "&cNecesitas suelo seguro y espacio para que aparezca el jefe."); return true;
+                }
+                data.set(base + ".boss.spawn", locationData(player.getLocation()));
+                msg(player, messageText("adventure-boss-spawn", "&aSpawn del jefe guardado para este mapa."));
+            } else if (args.length == 2 && args[1].equalsIgnoreCase("list")) {
+                msg(player, "&bBloques del jefe: &f" + data.getStringList(base + ".boss.blocks").size()
+                        + " &7| Spawn: " + (data.contains(base + ".boss.spawn") ? "&aSI" : "&cNO")); return true;
+            } else if (args.length == 3 && args[1].equalsIgnoreCase("clear")) {
+                if (args[2].equalsIgnoreCase("bloques")) data.set(base + ".boss.blocks", null);
+                else if (args[2].equalsIgnoreCase("spawn")) data.set(base + ".boss.spawn", null);
+                else { msg(player, "&e/dungeon boss clear bloques|spawn"); return true; }
+                msg(player, "&eConfiguracion del jefe eliminada: " + args[2]);
+            } else { msg(player, "&e/dungeon boss bloque | spawn | list | clear bloques|spawn"); return true; }
+        }
+        try { data.save(adventureFile); }
+        catch (IOException ex) { getLogger().log(java.util.logging.Level.SEVERE, "Error guardando adventure.yml", ex); msg(player, "&cNo se pudo guardar adventure.yml."); }
+        return true;
+    }
+
+    private boolean adventureCheckMovement(Player player, String instance, Location from, Location to) {
+        World world = player.getWorld();
+        List<Encounter> zones = adventureZones(instance);
+        int completed = adventureCompletedZones.getOrDefault(instance, 0);
+        Integer activeIndex = adventureActiveZone.get(instance);
+        if (activeIndex != null && activeIndex < zones.size()) {
+            Location center = zones.get(activeIndex).center();
+            double limit = Math.max(2, getConfig().getDouble("adventure.encounter-boundary-blocks", 15));
+            if (horizontalDistanceSquared(center, to) > limit * limit && horizontalDistanceSquared(center, to) > horizontalDistanceSquared(center, from)) {
+                msgCooldown(player, "adventure-encounter-boundary", "&cDerrota a todos los enemigos antes de avanzar.");
+                return true;
+            }
+            return false;
+        }
+        if (completed < zones.size()) {
+            Encounter next = zones.get(completed);
+            if (next.center().distanceSquared(to) <= next.radius() * next.radius()) startAdventureEncounter(world, completed, next);
+            return false;
+        }
+        if (adventureBossStarted.contains(instance)) return false;
+        String base = adventurePath(instance);
+        var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        for (String marked : data.getStringList(base + ".boss.blocks")) {
+            String[] parts = marked.split(",");
+            if (parts.length != 3) continue;
+            try {
+                int x = Integer.parseInt(parts[0]), y = Integer.parseInt(parts[1]) + PASTE_Y, z = Integer.parseInt(parts[2]);
+                if (to.getBlockX() == x && to.getBlockZ() == z && Math.abs(to.getBlockY() - y) <= 2) {
+                    startAdventureBoss(world, player); break;
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+        return false;
+    }
+
+    private final Map<UUID, Long> adventureWarnings = new HashMap<>();
+    private void msgCooldown(Player player, String key, String fallback) {
+        long now = System.currentTimeMillis();
+        if (now - adventureWarnings.getOrDefault(player.getUniqueId(), 0L) > 2000) {
+            adventureWarnings.put(player.getUniqueId(), now);
+            msg(player, messageText(key, fallback));
+        }
+    }
+
+    private void startAdventureEncounter(World world, int index, Encounter zone) {
+        String instance = world.getName();
+        if (adventureActiveZone.containsKey(instance) || adventureBossStarted.contains(instance)) return;
+        int perPlayer = Math.max(1, getConfig().getInt("adventure.mobs-per-player", 3));
+        int count = Math.min(40, perPlayer * Math.max(1, fighters(world).size()));
+        Set<UUID> active = enemies.computeIfAbsent(instance, k -> new HashSet<>());
+        String[] types = getConfig().getStringList("adventure.mob-ids").toArray(new String[0]);
+        if (types.length == 0) types = new String[]{"SkeletalMinion", "SkeletalKnight"};
+        for (int attempt = 0; attempt < count * 14 && active.size() < count; attempt++) {
+            Location pos = nearbySafeLocation(world, zone.center(), 2, Math.max(3, Math.min(8, (int) zone.radius())));
+            if (pos == null) continue;
+            String mobId = types[random.nextInt(types.length)];
+            try {
+                LivingEntity mob = spawnMythic(mobId, pos);
+                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
+                active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
+                updateEnemyName(mob, mobId);
+            } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo crear mob de encuentro: " + mobId, ex); break; }
+        }
+        if (active.isEmpty()) {
+            for (Player player : fighters(world)) msg(player, messageText("adventure-no-mobs", "&cNo se pudo iniciar el encuentro: no hay spawns seguros o MythicMobs falló."));
+            return; // No bloquear permanentemente el avance sin enemigos.
+        }
+        adventureActiveZone.put(instance, index);
+        for (Player player : fighters(world)) msg(player, messageText("adventure-encounter", "&c¡Emboscada! &fElimina a todos los enemigos para avanzar."));
+    }
+
+    private void completeAdventureEncounter(World world) {
+        String instance = world.getName();
+        Integer current = adventureActiveZone.remove(instance);
+        if (current == null) return;
+        adventureCompletedZones.put(instance, current + 1);
+        for (Player player : fighters(world)) msg(player, messageText("adventure-unlocked", "&a¡Zona despejada! &fPuedes seguir avanzando."));
+    }
+
+    private void startAdventureBoss(World world, Player trigger) {
+        String instance = world.getName();
+        if (adventureBossStarted.contains(instance)) return;
+        Location bossAt = adventureBossLocation(instance);
+        if (bossAt == null || !isSafe(world, bossAt.getBlockX(), bossAt.getBlockY(), bossAt.getBlockZ())) {
+            msg(trigger, messageText("adventure-no-boss-spawn", "&cConfigura un spawn seguro con /dungeon boss spawn.")); return;
+        }
+        adventureBossStarted.add(instance);
+        adventureBossCenters.put(instance, bossAt);
+        UUID playerId = trigger.getUniqueId();
+        frozen.add(playerId);
+        for (Player player : fighters(world)) {
+            player.sendTitle(messageText("adventure-boss-title", "&5&l¡JEFE FINAL!"), messageText("adventure-boss-subtitle", "&fAparece en 5 segundos"), 10, 70, 10);
+            player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.8f, 0.7f);
+        }
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            frozen.remove(playerId);
+            if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) return;
+            String mobId = getConfig().getString("adventure.boss-id", "SkeletonKing");
+            try {
+                LivingEntity boss = spawnMythic(mobId, bossAt);
+                setEnemyHealth(boss, Math.max(1, getConfig().getDouble("adventure.boss-health", 500.0)));
+                bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(boss.getUniqueId());
+                enemyTypes.put(boss.getUniqueId(), mobId);
+                updateEnemyName(boss, mobId);
+                if (boss instanceof org.bukkit.entity.Mob attacker) attacker.setTarget(trigger.isOnline() && trigger.getWorld().equals(world)
+                        ? trigger : fighters(world).get(0));
+                for (Player player : fighters(world)) msg(player, messageText("adventure-boss-appeared", "&5¡El jefe apareció! &fDerrótalo para completar la mazmorra."));
+            } catch (Exception ex) {
+                getLogger().log(java.util.logging.Level.SEVERE, "Error generando jefe de aventura", ex);
+                adventureBossStarted.remove(instance); adventureBossCenters.remove(instance);
+                for (Player player : fighters(world)) msg(player, "&cNo se pudo invocar el jefe. Revisa la consola.");
+            }
+        }, 100L);
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
         UUID id = p.getUniqueId();
@@ -459,6 +695,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             }
             return true;
         }
+        if (args[0].equalsIgnoreCase("mobs") || args[0].equalsIgnoreCase("boss")) return adventureCommand(p, args);
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
@@ -997,6 +1234,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
         for (UUID boss : bosses.getOrDefault(name, Set.of())) { protectedMobs.remove(boss); lostTicks.remove(boss); lastMobPositions.remove(boss); }
+        adventureCompletedZones.remove(name); adventureActiveZone.remove(name);
+        adventureBossStarted.remove(name); adventureBossCenters.remove(name); adventureReady.remove(name);
         bosses.remove(name); rounds.remove(name); roundTransitioning.remove(name);
         enemies.remove(name); bossAreas.remove(name); teamSizes.remove(name);
         entryPoints.remove(name); schematicNames.remove(name);
@@ -1282,19 +1521,36 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (center != null && destination.getWorld().equals(center.getWorld())) {
                 double dx = destination.getX() - center.getX();
                 double dz = destination.getZ() - center.getZ();
-                if ((getConfig().getBoolean("height-protection.enabled", true)
+                Location limitCenter = adventureBossStarted.contains(instance) ? adventureBossCenters.getOrDefault(instance, center) : center;
+                double lx = destination.getX() - limitCenter.getX(), lz = destination.getZ() - limitCenter.getZ();
+                double limitRadius = adventureBossStarted.contains(instance)
+                        ? Math.max(1.0, getConfig().getDouble("adventure.boss-radius-blocks", 100.0))
+                        : isAdventure(instance) ? Math.max(33.0, getConfig().getDouble("adventure.travel-radius-blocks", 256.0))
+                        : dungeonRadius(instance);
+                if ((getConfig().getBoolean("height-protection.enabled", true) && !adventureBossStarted.contains(instance)
+                        && !isAdventure(instance)
                         && destination.getY() > center.getY() + getConfig().getDouble("height-protection.max-height-above-spawn", 10.0))
-                        || dx * dx + dz * dz > dungeonRadius(instance) * dungeonRadius(instance)) {
+                        || lx * lx + lz * lz > limitRadius * limitRadius) {
                     // Programar el teleport fuera de PlayerMoveEvent para evitar reentradas.
                     Bukkit.getScheduler().runTask(this, () -> {
                         if (instance.equals(playingWorld.get(player.getUniqueId())) && player.isOnline()) {
-                            player.teleport(center.clone());
+                            player.teleport((adventureBossStarted.contains(instance)
+                                    ? adventureBossCenters.getOrDefault(instance, center) : center).clone());
                             msg(player, messageText("boundary", "No puedes salir de los límites de la mazmorra."));
                         }
                     });
                     event.setTo(event.getFrom());
                     return;
                 }
+            }
+        }
+        if (instance != null && isAdventure(instance) && adventureReady.contains(instance)
+                && !finishing.contains(instance) && !adventureBossStarted.contains(instance)
+                && player.getGameMode() != GameMode.SPECTATOR
+                && !(player.isOp() && adminFreeMode.contains(player.getUniqueId()))) {
+            if (adventureCheckMovement(player, instance, event.getFrom(), event.getTo())) {
+                event.setTo(event.getFrom());
+                return;
             }
         }
         if (!frozen.contains(player.getUniqueId())) return;
@@ -1320,7 +1576,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     }
                     bossAreas.put(name, new BossArea(clipboard, pasteAt));
                     totalSpawned.put(name, 0); defeated.put(name, 0); rounds.put(name, 1);
-                    spawnNextMobs(world);
+                    if (isAdventure(name)) {
+                        adventureCompletedZones.put(name, 0);
+                        adventureReady.add(name);
+                        for (Player player : world.getPlayers()) msg(player, messageText("adventure-start", "&bAventura: avanza y derrota a los enemigos de cada zona."));
+                    } else spawnNextMobs(world);
                     startTracker(world);
                     cancel(); return;
                 }
@@ -1469,7 +1729,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void spawnNextMobs(World world) {
         String name = world.getName();
-        if (!instanceWorlds.contains(name) || finishing.contains(name) || roundTransitioning.contains(name)
+        if (isAdventure(name) || !instanceWorlds.contains(name) || finishing.contains(name) || roundTransitioning.contains(name)
                 || rounds.getOrDefault(name, 1) >= 3) return;
         Set<UUID> active = enemies.get(name);
         if (active == null || !active.isEmpty()) return; // Oleadas completas, nunca mezclar grupos.
@@ -1501,7 +1761,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     private void advanceRound(World world) {
         String name = world.getName();
-        if (!instanceWorlds.contains(name) || finishing.contains(name) || !roundTransitioning.add(name)) return;
+        if (isAdventure(name) || !instanceWorlds.contains(name) || finishing.contains(name) || !roundTransitioning.add(name)) return;
         int next = rounds.getOrDefault(name, 1) + 1;
         if (next > 3) return;
         String title = next == 2 ? hex("#9640FC") + "" + ChatColor.BOLD + "OLEADA 2"
@@ -1546,8 +1806,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (distance < 3.5 * 3.5) { lostTicks.remove(mobId); return; }
         boolean stuck = previous != null && previous.distanceSquared(mob.getLocation()) < 0.35 * 0.35;
         // Un mob que queda lejos del área también debe regresar al combate.
-        Location spawn = entryPoints.get(world.getName());
-        double radiusSquared = Math.pow(dungeonRadius(world.getName()), 2);
+        Location spawn = adventureBossStarted.contains(world.getName())
+                ? adventureBossCenters.getOrDefault(world.getName(), entryPoints.get(world.getName()))
+                : entryPoints.get(world.getName());
+        double radiusSquared = Math.pow(adventureBossStarted.contains(world.getName())
+                ? getConfig().getDouble("adventure.boss-radius-blocks", 100.0) : dungeonRadius(world.getName()), 2);
         boolean escaped = spawn != null && horizontalDistanceSquared(spawn, mob.getLocation()) > radiusSquared;
         int stalled = stuck || escaped ? lostTicks.merge(mobId, 1, Integer::sum) : 0;
         if (!stuck && !escaped) lostTicks.remove(mobId);
@@ -1636,6 +1899,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     pursueEnemy(boss, bossId, players, world);
                 }
             }
+            if (isAdventure(name)) {
+                if (adventureActiveZone.containsKey(name) && active.isEmpty()) completeAdventureEncounter(world);
+                return;
+            }
             if (rounds.getOrDefault(name, 1) < 3 && !roundTransitioning.contains(name)) {
                 if (defeated.getOrDefault(name, 0) >= roundTotal(name) && active.isEmpty()) advanceRound(world);
                 else spawnNextMobs(world);
@@ -1681,7 +1948,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         Set<UUID> active = enemies.get(name);
         if (active == null) return;
-        if (active.remove(dead)) {
+        boolean removedEnemy = active.remove(dead);
+        if (removedEnemy && isAdventure(name)) {
+            if (active.isEmpty()) completeAdventureEncounter(event.getEntity().getWorld());
+        } else if (removedEnemy) {
             int kills = defeated.merge(name, 1, Integer::sum);
             for (Player p : event.getEntity().getWorld().getPlayers())
                 p.sendMessage(net.md_5.bungee.api.ChatColor.of("#FFA5A5") + "¡Uno menos!" + org.bukkit.ChatColor.WHITE

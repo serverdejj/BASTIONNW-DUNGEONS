@@ -55,3 +55,18 @@ map-rules:
         blocks: 20
         damage: 1000.0
         force-death-if-survives: true
+
+# dungeon1-endlessxl: modo de avance sin oleadas. Los otros mapas siguen igual.
+# Las zonas y el spawn del jefe se guardan por mapa en adventure.yml con comandos OP.
+adventure:
+  enabled: true
+  map: 'dungeon1-endlessxl'
+  travel-radius-blocks: 256
+  encounter-boundary-blocks: 15
+  mobs-per-player: 3
+  mob-ids:
+    - 'SkeletalMinion'
+    - 'SkeletalKnight'
+  boss-id: 'SkeletonKing'
+  boss-health: 500.0
+  boss-radius-blocks: 100
