@@ -9,7 +9,7 @@ softdepend: [MythicMobs]
 commands:
   dungeon:
     description: Comandos de party y mazmorra
-    usage: /dungeon go map <nombre> (OP); /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
+    usage: /dungeon romper | libre (OP); /dungeon go map <nombre> (OP); /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
     aliases: [dungeons]
 permissions:
   bastiondungeons.use:

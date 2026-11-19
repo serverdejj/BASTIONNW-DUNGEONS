@@ -14,3 +14,11 @@ admin-map-list: '&eMapas disponibles: &f{maps}'
 admin-map-usage: '&eUsa /dungeon go map <nombre>'
 admin-map-unknown: '&cMapa no encontrado: &f{map}'
 admin-map-selected: '&aMapa seleccionado: &b{map}'
+
+# Modos de administracion de mapas (solo OP).
+admin-edit-denied: '&cSolo los administradores OP pueden usar este comando.'
+admin-edit-usage: '&eUsa /dungeon romper o /dungeon libre.'
+admin-break-on: '&#55FF55Modo romper activado: puedes romper bloques de mazmorras.'
+admin-break-off: '&#FF5555Modo romper desactivado.'
+admin-free-on: '&#55FF55Modo libre activado: sin limite de 33 bloques ni altura.'
+admin-free-off: '&#FF5555Modo libre desactivado.'

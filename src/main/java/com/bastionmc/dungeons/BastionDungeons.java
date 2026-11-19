@@ -83,6 +83,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, Integer> teamSizes = new HashMap<>();
     private final Random random = new Random();
     private final Set<UUID> frozen = new HashSet<>();
+    // Herramientas temporales, personales y exclusivas para OP.
+    private final Set<UUID> adminBreakMode = new HashSet<>();
+    private final Set<UUID> adminFreeMode = new HashSet<>();
     private final Set<UUID> protectedMobs = new HashSet<>();
     private final Map<String, Location> entryPoints = new HashMap<>();
     private final Map<String, String> schematicNames = new HashMap<>();
@@ -231,7 +234,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<String> options = new ArrayList<>();
         if (args.length == 1) {
             options.addAll(List.of("party", "go", "leave"));
-            if (player.isOp()) options.addAll(List.of("loot", "setspawn", "setmobspawn", "clearmobspawns"));
+            if (player.isOp()) options.addAll(List.of("loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre"));
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
@@ -391,6 +394,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (session != null) { showVoteMenu(p, session); return true; }
             if (!leader(id).equals(id)) { msg(p, "El líder debe abrir la votación con /dungeon."); return true; }
             return onCommand(sender, cmd, label, new String[]{"go"});
+        }
+        if (args[0].equalsIgnoreCase("romper") || args[0].equalsIgnoreCase("libre")) {
+            if (!p.isOp()) { msg(p, messageText("admin-edit-denied", "&cSolo administradores OP.")); return true; }
+            if (args.length != 1) { msg(p, messageText("admin-edit-usage", "&eUsa /dungeon romper o /dungeon libre.")); return true; }
+            boolean breaking = args[0].equalsIgnoreCase("romper");
+            Set<UUID> modes = breaking ? adminBreakMode : adminFreeMode;
+            boolean enabled = modes.add(id);
+            if (!enabled) modes.remove(id);
+            String key = breaking ? "admin-break-" : "admin-free-";
+            String fallback = breaking
+                    ? (enabled ? "&aModo romper activado. Puedes romper bloques en mazmorras." : "&cModo romper desactivado.")
+                    : (enabled ? "&aModo libre activado. Sin limites de radio ni altura en mazmorras." : "&cModo libre desactivado.");
+            msg(p, messageText(key + (enabled ? "on" : "off"), fallback));
+            return true;
         }
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
@@ -1139,7 +1156,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler(ignoreCancelled = true)
-    public void onDungeonBreak(BlockBreakEvent event) { if (dungeonWorld(event.getBlock().getWorld()) && getConfig().getBoolean("dungeon-protection.block-breaking", true)) event.setCancelled(true); }
+    public void onDungeonBreak(BlockBreakEvent event) {
+        if (!dungeonWorld(event.getBlock().getWorld())) return;
+        if (event.getPlayer().isOp() && adminBreakMode.contains(event.getPlayer().getUniqueId())) return;
+        if (getConfig().getBoolean("dungeon-protection.block-breaking", true)) event.setCancelled(true);
+    }
     @EventHandler(ignoreCancelled = true)
     public void onDungeonPlace(BlockPlaceEvent event) { if (dungeonWorld(event.getBlock().getWorld()) && getConfig().getBoolean("dungeon-protection.block-placing", true)) event.setCancelled(true); }
     @EventHandler(ignoreCancelled = true)
@@ -1193,7 +1214,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Player player = event.getPlayer();
         String instance = playingWorld.get(player.getUniqueId());
         if (instance != null && instance.equals(player.getWorld().getName())
-                && player.getGameMode() != GameMode.SPECTATOR) {
+                && player.getGameMode() != GameMode.SPECTATOR
+                && !(player.isOp() && adminFreeMode.contains(player.getUniqueId()))) {
             Location center = entryPoints.get(instance);
             Location destination = event.getTo();
             if (center != null && destination.getWorld().equals(center.getWorld())) {
@@ -1647,6 +1669,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler public void onQuit(PlayerQuitEvent e) {
+        adminBreakMode.remove(e.getPlayer().getUniqueId());
+        adminFreeMode.remove(e.getPlayer().getUniqueId());
         VoteSession session = voterSessions.get(e.getPlayer().getUniqueId());
         if (session != null) cancelVote(session, "Votación cancelada: un jugador se desconectó.");
         clearLobbyEffects(e.getPlayer());
