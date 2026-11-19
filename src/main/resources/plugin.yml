@@ -1,20 +1,20 @@
-name: BastionDungeons
-version: 1.2.26-dev
-main: com.bastionmc.dungeons.BastionDungeons
+name: BastionMCItemDisplay
+version: 0.2.4-beta
+main: com.bastionmc.itemdisplay.BastionMCItemDisplay
 api-version: '1.21.11'
+softdepend: [ItemStacker]
 author: BASTION MC
-description: Partidas privadas y mazmorras schematic (prototipo)
-depend: [WorldEdit]
-softdepend: [MythicMobs]
+description: Dropped item labels, custom rarity and visual effects
 commands:
-  dungeon:
-    description: Comandos de party y mazmorra
-    usage: /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
-    aliases: [dungeons]
+  rareza:
+    description: Asigna o restaura la rareza de un objeto
+    usage: /rareza item <comun|pococomun|raro|muyraro|epico|legendario|mitico|divino|reset>
+    permission: bastionitemdisplay.admin
+  itemdisplay:
+    description: Recarga la configuracion
+    usage: /itemdisplay reload
+    permission: bastionitemdisplay.admin
 permissions:
-  bastiondungeons.use:
-    default: true
-
-  bastiondungeons.bypass:
-    description: Ignora los horarios de apertura de mazmorras
+  bastionitemdisplay.admin:
+    description: Gestion de rarezas y configuracion
     default: op
