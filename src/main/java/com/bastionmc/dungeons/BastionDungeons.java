@@ -162,6 +162,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         getServer().getPluginManager().registerEvents(this, this);
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
+        Bukkit.getScheduler().runTaskTimer(this, this::checkMapVoidPlayers, 5L, 5L);
         getLogger().info("Bastion Dungeons 1.2.26-dev listo.");
     }
 
@@ -273,6 +274,52 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private String mapId(File f) {
         String name = f.getName();
         return name.substring(0, name.length() - ".schem".length());
+    }
+
+    // Reglas independientes por schematic, tambien cuando la seleccion es aleatoria.
+    // La clave es el nombre del archivo sin ".schem" (sin distinguir mayusculas).
+    private String mapRulePath(String instance) {
+        String fileName = schematicNames.get(instance);
+        if (fileName == null) return null;
+        String id = fileName.toLowerCase(Locale.ROOT);
+        if (id.endsWith(".schem")) id = id.substring(0, id.length() - 6);
+        // Claves sin puntos evitan que YAML interprete una extension como una subseccion.
+        id = id.replace('.', '_');
+        return "map-rules.maps." + id;
+    }
+
+    private double dungeonRadius(String instance) {
+        double fallback = getConfig().getDouble("map-rules.defaults.radius-blocks", 33.0);
+        String path = mapRulePath(instance);
+        double radius = path == null ? fallback : getConfig().getDouble(path + ".radius-blocks", fallback);
+        return Math.max(1.0, radius);
+    }
+
+    private void checkBelowSpawnDeath(Player player, String instance, Location destination) {
+        if (player.isDead() || awaitingDungeonRespawn.contains(player.getUniqueId())
+                || player.getGameMode() == GameMode.SPECTATOR) return;
+        Location spawn = entryPoints.get(instance);
+        String path = mapRulePath(instance);
+        if (spawn == null || path == null || destination == null || destination.getWorld() != spawn.getWorld()) return;
+        if (!getConfig().getBoolean(path + ".below-spawn.enabled", false)) return;
+        double blocks = Math.max(1.0, getConfig().getDouble(path + ".below-spawn.blocks", 20.0));
+        if (destination.getY() > spawn.getY() - blocks) return;
+        // Provoca la muerte convencional para mantener drops, espectador y salida a los 5 s.
+        // Algunos plugins pueden reducir/cancelar el dano: el fallback garantiza la muerte.
+        double damage = Math.max(1.0, getConfig().getDouble(path + ".below-spawn.damage", 1000.0));
+        player.damage(damage);
+        if (!player.isDead() && player.getHealth() > 0.0
+                && getConfig().getBoolean(path + ".below-spawn.force-death-if-survives", true))
+            player.setHealth(0.0);
+    }
+
+    // Tambien cubre quedarse quieto bajo el umbral o teletransportes externos.
+    private void checkMapVoidPlayers() {
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            String instance = playingWorld.get(player.getUniqueId());
+            if (instance == null || !instance.equals(player.getWorld().getName())) continue;
+            checkBelowSpawnDeath(player, instance, player.getLocation());
+        }
     }
 
     private UUID leader(UUID id) { return leaderOf.getOrDefault(id, id); }
@@ -407,6 +454,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     ? (enabled ? "&aModo romper activado. Puedes romper bloques en mazmorras." : "&cModo romper desactivado.")
                     : (enabled ? "&aModo libre activado. Sin limites de radio ni altura en mazmorras." : "&cModo libre desactivado.");
             msg(p, messageText(key + (enabled ? "on" : "off"), fallback));
+            if (breaking && enabled && p.getGameMode() != GameMode.SURVIVAL && p.getGameMode() != GameMode.CREATIVE) {
+                msg(p, "&ePara romper bloques debes estar en Survival o Creativo. Tu modo actual: " + p.getGameMode().name());
+            }
             return true;
         }
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
@@ -1155,10 +1205,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
-    @EventHandler(ignoreCancelled = true)
+    // HIGHEST para que el permiso temporal de un OP se aplique tambien cuando
+    // otra proteccion haya cancelado previamente la rotura de este bloque.
+    // No se modifica ningun mundo ajeno a las instancias de Dungeons.
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
     public void onDungeonBreak(BlockBreakEvent event) {
         if (!dungeonWorld(event.getBlock().getWorld())) return;
-        if (event.getPlayer().isOp() && adminBreakMode.contains(event.getPlayer().getUniqueId())) return;
+        Player player = event.getPlayer();
+        if (player.isOp() && adminBreakMode.contains(player.getUniqueId())
+                && (player.getGameMode() == GameMode.SURVIVAL || player.getGameMode() == GameMode.CREATIVE)) {
+            event.setCancelled(false);
+            return;
+        }
         if (getConfig().getBoolean("dungeon-protection.block-breaking", true)) event.setCancelled(true);
     }
     @EventHandler(ignoreCancelled = true)
@@ -1213,6 +1271,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (event.getTo() == null) return;
         Player player = event.getPlayer();
         String instance = playingWorld.get(player.getUniqueId());
+        if (instance != null && instance.equals(player.getWorld().getName()))
+            checkBelowSpawnDeath(player, instance, event.getTo());
+        if (player.isDead() || awaitingDungeonRespawn.contains(player.getUniqueId())) return;
         if (instance != null && instance.equals(player.getWorld().getName())
                 && player.getGameMode() != GameMode.SPECTATOR
                 && !(player.isOp() && adminFreeMode.contains(player.getUniqueId()))) {
@@ -1223,7 +1284,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 double dz = destination.getZ() - center.getZ();
                 if ((getConfig().getBoolean("height-protection.enabled", true)
                         && destination.getY() > center.getY() + getConfig().getDouble("height-protection.max-height-above-spawn", 10.0))
-                        || dx * dx + dz * dz > 33.0 * 33.0) {
+                        || dx * dx + dz * dz > dungeonRadius(instance) * dungeonRadius(instance)) {
                     // Programar el teleport fuera de PlayerMoveEvent para evitar reentradas.
                     Bukkit.getScheduler().runTask(this, () -> {
                         if (instance.equals(playingWorld.get(player.getUniqueId())) && player.isOnline()) {
@@ -1486,12 +1547,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         boolean stuck = previous != null && previous.distanceSquared(mob.getLocation()) < 0.35 * 0.35;
         // Un mob que queda lejos del área también debe regresar al combate.
         Location spawn = entryPoints.get(world.getName());
-        boolean escaped = spawn != null && horizontalDistanceSquared(spawn, mob.getLocation()) > 33.0 * 33.0;
+        double radiusSquared = Math.pow(dungeonRadius(world.getName()), 2);
+        boolean escaped = spawn != null && horizontalDistanceSquared(spawn, mob.getLocation()) > radiusSquared;
         int stalled = stuck || escaped ? lostTicks.merge(mobId, 1, Integer::sum) : 0;
         if (!stuck && !escaped) lostTicks.remove(mobId);
         if (escaped || stalled >= 4) {
             Location destination = nearbySafeLocation(world, closest.getLocation(), 2, 4);
-            if (destination != null && (spawn == null || horizontalDistanceSquared(spawn, destination) <= 33.0 * 33.0)) {
+            if (destination != null && (spawn == null || horizontalDistanceSquared(spawn, destination) <= radiusSquared)) {
                 mob.teleport(destination);
                 if (mob instanceof org.bukkit.entity.Mob pathfindingMob) pathfindingMob.setTarget(closest);
                 lastMobPositions.put(mobId, destination.clone());

@@ -40,3 +40,18 @@ dungeon-mobs:
   block-natural-spawns: true
   # false: solo invocaciones hechas por BastionDungeons mediante MythicMobs.
   allow-other-custom-spawns: false
+
+# Reglas por mapa (tambien se aplican si la seleccion fue aleatoria).
+# Usa el nombre EXACTO del archivo .schem, sin extension, en minusculas.
+# Los mapas no incluidos siguen usando el radio normal de 33 bloques.
+map-rules:
+  defaults:
+    radius-blocks: 33
+  maps:
+    netherybreis:
+      radius-blocks: 67
+      below-spawn:
+        enabled: true
+        blocks: 20
+        damage: 1000.0
+        force-death-if-survives: true
