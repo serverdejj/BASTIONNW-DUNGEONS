@@ -1,3 +1,4 @@
+# El nombre del disfraz se oculta; solo queda visible el holograma de BastionDungeons.
 # BASTION MC - The Labyrinth: mobs con modelo base uniforme.
 # Usa Type: ZOMBIE para evitar los tamanos aleatorios de SLIME.
 # LibsDisguises muestra las skins de jugador; BastionDungeons ajusta
@@ -9,7 +10,7 @@ BastionSlimeMutant:
   Display: '&aMutante Slime'
   Health: 100
   Damage: 9
-  Disguise: 'player SlimeMutante setSkin SlimeMutante'
+  Disguise: 'player SlimeMutante setSkin SlimeMutante setNameVisible false'
   Options:
     PreventOtherDrops: true
     PreventSunburn: true
@@ -19,7 +20,7 @@ BastionSlimeGiant:
   Display: '&aSlime Gigante'
   Health: 250
   Damage: 16
-  Disguise: 'player SlimeGigante setSkin SlimeGigante'
+  Disguise: 'player SlimeGigante setSkin SlimeGigante setNameVisible false'
   Options:
     PreventOtherDrops: true
     PreventSunburn: true
@@ -29,7 +30,7 @@ BastionSlimeMoon:
   Display: '&dSlime Moon'
   Health: 160
   Damage: 13
-  Disguise: 'player SlimeMoon setSkin SlimeMoon'
+  Disguise: 'player SlimeMoon setSkin SlimeMoon setNameVisible false'
   Options:
     PreventOtherDrops: true
     PreventSunburn: true
@@ -39,7 +40,7 @@ BastionSlimeKing:
   Display: '&2Rey Slime'
   Health: 2000
   Damage: 35
-  Disguise: 'player ReySlime setSkin ReySlime'
+  Disguise: 'player ReySlime setSkin ReySlime setNameVisible false'
   Options:
     PreventOtherDrops: true
     PreventSunburn: true

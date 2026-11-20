@@ -194,7 +194,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::checkMapVoidPlayers, 5L, 5L);
-        Bukkit.getScheduler().runTaskTimer(this, this::tickMobHolograms, 2L, 2L);
+        Bukkit.getScheduler().runTaskTimer(this, this::tickMobHolograms, 1L, 1L);
         getLogger().info("Bastion Dungeons 1.2.26-dev listo.");
     }
 
@@ -1930,6 +1930,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 display = mob.getWorld().spawn(at, TextDisplay.class, hologram -> {
                     hologram.setBillboard(org.bukkit.entity.Display.Billboard.CENTER);
                     hologram.setPersistent(false);
+                    // Interpolar cada teletransporte entre actualizaciones de 1 tick.
+                    hologram.setTeleportDuration(1);
                     hologram.setDefaultBackground(false);
                     hologram.setBackgroundColor(Color.fromARGB(0, 0, 0, 0));
                     hologram.setShadowed(getConfig().getBoolean("mob-hologram.shadow", true));
