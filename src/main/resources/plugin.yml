@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.32-custom-mob-stats
+version: 1.2.33-hologram-slime-jump
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC

@@ -40,6 +40,9 @@ import org.bukkit.potion.PotionEffectType;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.entity.Entity;
+import org.bukkit.entity.TextDisplay;
+import org.bukkit.util.Vector;
+import org.joml.Vector3f;
 import org.bukkit.event.player.PlayerChangedWorldEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.generator.ChunkGenerator;
@@ -102,6 +105,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     // controlados por BastionDungeons, nunca a criaturas normales del servidor.
     private final Set<UUID> kingLanding = new HashSet<>();
     private final Map<UUID, Long> kingLastLaunch = new HashMap<>();
+    // Hologramas independientes de la entidad (compatibles con disfraces de jugador).
+    private final Map<UUID, List<TextDisplay>> mobHolograms = new HashMap<>();
+    private final Set<UUID> slimeBossJumping = new HashSet<>();
+    private final Map<UUID, org.bukkit.scheduler.BukkitTask> slimeBossTasks = new HashMap<>();
 
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
@@ -187,6 +194,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         loadSchedule();
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::checkMapVoidPlayers, 5L, 5L);
+        Bukkit.getScheduler().runTaskTimer(this, this::tickMobHolograms, 2L, 2L);
         getLogger().info("Bastion Dungeons 1.2.26-dev listo.");
     }
 
@@ -252,7 +260,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
     private long lastAnnouncedOpen = -1L;
 
-    @Override public void onDisable() { kingLanding.clear(); kingLastLaunch.clear(); saveSchedule(); }
+    @Override public void onDisable() {
+        for (UUID id : new HashSet<>(mobHolograms.keySet())) removeMobHologram(id);
+        for (org.bukkit.scheduler.BukkitTask task : slimeBossTasks.values()) task.cancel();
+        slimeBossTasks.clear(); slimeBossJumping.clear();
+        kingLanding.clear(); kingLastLaunch.clear(); saveSchedule();
+    }
 
     @Override public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!(sender instanceof Player player)) return List.of();
@@ -595,15 +608,15 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             } else { msg(player, "&e/dungeon radio 15 oleadas 2 | /dungeon mobs radio <1-100> | list | clear"); return true; }
         } else if (args[0].equalsIgnoreCase("boss")) {
             if (args.length == 2 && args[1].equalsIgnoreCase("bloque")) {
-                // Marcar el bloque bajo los pies del OP. Maximo 3 activadores.
+                // Marcar el bloque bajo los pies del OP. Hasta 10 activadores.
                 Location ground = player.getLocation().getBlock().getRelative(org.bukkit.block.BlockFace.DOWN).getLocation();
                 String marker = ground.getBlockX() + "," + (ground.getBlockY() - PASTE_Y) + "," + ground.getBlockZ();
                 List<String> blocks = new ArrayList<>(data.getStringList(base + ".boss.blocks"));
                 if (blocks.contains(marker)) { msg(player, "&eEste bloque ya es un activador."); return true; }
-                if (blocks.size() >= 3) { msg(player, "&cYa hay 3 bloques. Usa /dungeon boss clear bloques para reiniciarlos."); return true; }
+                if (blocks.size() >= 10) { msg(player, "&cYa hay 10 bloques. Usa /dungeon boss clear bloques para reiniciarlos."); return true; }
                 blocks.add(marker);
                 data.set(base + ".boss.blocks", blocks);
-                msg(player, messageText("adventure-boss-block", "&aBloque activador del jefe: &f{number}/3").replace("{number}", "" + blocks.size()));
+                msg(player, messageText("adventure-boss-block", "&aBloque activador del jefe: &f{number}/{limit}").replace("{number}", "" + blocks.size()).replace("{limit}", "10").replace("/3", "/10"));
             } else if (args.length == 2 && args[1].equalsIgnoreCase("spawn")) {
                 if (!isSafe(player.getWorld(), player.getLocation().getBlockX(), player.getLocation().getBlockY(), player.getLocation().getBlockZ())) {
                     msg(player, "&cNecesitas suelo seguro y espacio para que aparezca el jefe."); return true;
@@ -953,6 +966,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(boss.getUniqueId());
                 enemyTypes.put(boss.getUniqueId(), mobId);
                 updateEnemyName(boss, mobId);
+                if (labyrinth) startSlimeBossJump(boss);
                 if (boss instanceof org.bukkit.entity.Mob attacker) attacker.setTarget(trigger.isOnline() && trigger.getWorld().equals(world)
                         ? trigger : fighters(world).get(0));
                 for (Player player : fighters(world)) msg(player, messageText("adventure-boss-appeared", "&5¡El jefe apareció! &fDerrótalo para completar la mazmorra."));
@@ -1652,6 +1666,16 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             getLogger().warning("No se limpiará " + name + ": todavía hay jugadores dentro.");
             return;
         }
+        for (UUID id : new HashSet<>(mobHolograms.keySet())) {
+            Entity entity = Bukkit.getEntity(id);
+            if (entity == null || name.equals(entity.getWorld().getName())) removeMobHologram(id);
+        }
+        for (UUID id : new HashSet<>(slimeBossTasks.keySet())) {
+            Entity entity = Bukkit.getEntity(id);
+            if (entity == null || name.equals(entity.getWorld().getName())) {
+                slimeBossTasks.remove(id).cancel(); slimeBossJumping.remove(id);
+            }
+        }
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
@@ -1845,10 +1869,174 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         long hp = Math.max(0L, (long) Math.ceil(mob.getHealth() + mob.getAbsorptionAmount()));
         long total = Math.max(1L, (long) Math.ceil(max + mob.getAbsorptionAmount()));
         String namePattern = getConfig().getString("mob-nameplate.format", "{name} &7| &c❤ {health}/{max_health}");
-        mob.setCustomName(format(namePattern.replace("{name}", name)
+        String rendered = format(namePattern.replace("{name}", name)
                 .replace("{health}", String.valueOf(hp))
-                .replace("{max_health}", String.valueOf(total))));
-        mob.setCustomNameVisible(true);
+                .replace("{max_health}", String.valueOf(total)));
+        if (getConfig().getBoolean("mob-hologram.enabled", true)) {
+            // El nombre nativo suele quedar oculto por LibsDisguises. Usamos TextDisplay.
+            mob.setCustomNameVisible(false);
+            ensureMobHologram(mob, mobType, name, hp, total, rendered);
+        } else {
+            removeMobHologram(mob.getUniqueId());
+            mob.setCustomName(rendered);
+            mob.setCustomNameVisible(true);
+        }
+    }
+
+    // Configuracion por mob: skeleton-mobs.minion.hologram / labyrinth.mobs.mutant.hologram
+    private String hologramPath(String mobType) {
+        String path = labyrinthMobPath(mobType);
+        return path != null ? path + ".hologram" :
+                (skeletonMobPath(mobType) == null ? "mob-hologram" : skeletonMobPath(mobType) + ".hologram");
+    }
+
+    private double hologramNumber(String local, String global, double fallback) {
+        return getConfig().contains(local) ? getConfig().getDouble(local) : getConfig().getDouble(global, fallback);
+    }
+
+    private void removeMobHologram(UUID mobId) {
+        List<TextDisplay> lines = mobHolograms.remove(mobId);
+        if (lines != null) for (TextDisplay line : lines) if (line.isValid()) line.remove();
+    }
+
+    private void ensureMobHologram(LivingEntity mob, String mobType, String name, long health, long maxHealth, String fallback) {
+        String local = hologramPath(mobType);
+        if (!getConfig().getBoolean(local + ".enabled", getConfig().getBoolean("mob-hologram.enabled", true))) {
+            removeMobHologram(mob.getUniqueId()); return;
+        }
+        List<String> patterns = getConfig().getStringList(local + ".lines");
+        if (patterns.isEmpty()) patterns = getConfig().getStringList("mob-hologram.lines");
+        if (patterns.isEmpty()) patterns = List.of("{name} &7| &c❤ {health}/{max_health}");
+        final List<String> templates = patterns;
+        List<TextDisplay> displays = mobHolograms.computeIfAbsent(mob.getUniqueId(), k -> new ArrayList<>());
+        while (displays.size() > templates.size()) {
+            TextDisplay old = displays.remove(displays.size() - 1);
+            if (old.isValid()) old.remove();
+        }
+        for (int i = 0; i < templates.size(); i++) {
+            final int index = i;
+            String linePath = local + ".line-settings." + (i + 1);
+            double defaultHeight = hologramNumber(local + ".height", "mob-hologram.height", 0.45);
+            double lineSpacing = hologramNumber(local + ".line-spacing", "mob-hologram.line-spacing", 0.26);
+            double height = hologramNumber(linePath + ".height", local + ".height", defaultHeight + (templates.size() - 1 - i) * lineSpacing);
+            // Respectar la separacion automatica cuando no se ha definido altura individual.
+            if (!getConfig().contains(linePath + ".height")) height = defaultHeight + (templates.size() - 1 - i) * lineSpacing;
+            Location at = mob.getLocation().add(
+                    hologramNumber(linePath + ".offset-x", "mob-hologram.offset-x", 0),
+                    mob.getHeight() + height + hologramNumber(linePath + ".offset-y", "mob-hologram.offset-y", 0),
+                    hologramNumber(linePath + ".offset-z", "mob-hologram.offset-z", 0));
+            TextDisplay display;
+            if (i >= displays.size()) {
+                display = mob.getWorld().spawn(at, TextDisplay.class, hologram -> {
+                    hologram.setBillboard(org.bukkit.entity.Display.Billboard.CENTER);
+                    hologram.setPersistent(false);
+                    hologram.setDefaultBackground(false);
+                    hologram.setBackgroundColor(Color.fromARGB(0, 0, 0, 0));
+                    hologram.setShadowed(getConfig().getBoolean("mob-hologram.shadow", true));
+                });
+                displays.add(display);
+            } else display = displays.get(i);
+            if (!display.isValid()) continue;
+            String template = templates.get(index);
+            display.setText(format(template.replace("{name}", name).replace("{health}", String.valueOf(health))
+                    .replace("{max_health}", String.valueOf(maxHealth)).replace("{type}", mobType)));
+            int opacity = (int) Math.max(0, Math.min(255, hologramNumber(linePath + ".background-opacity", local + ".background-opacity",
+                    getConfig().getDouble("mob-hologram.background-opacity", 0))));
+            display.setBackgroundColor(Color.fromARGB(opacity, 0, 0, 0));
+            display.setDefaultBackground(false);
+            display.setSeeThrough(getConfig().getBoolean(local + ".see-through", getConfig().getBoolean("mob-hologram.see-through", false)));
+            double scale = Math.max(0.1, Math.min(5, hologramNumber(linePath + ".scale", local + ".scale",
+                    getConfig().getDouble("mob-hologram.scale", 1.0))));
+            var transform = display.getTransformation();
+            transform.getScale().set((float) scale, (float) scale, (float) scale);
+            display.setTransformation(transform);
+            if (!display.getWorld().equals(at.getWorld()) || display.getLocation().distanceSquared(at) > .001) display.teleport(at);
+        }
+    }
+
+    private void tickMobHolograms() {
+        for (UUID id : new HashSet<>(mobHolograms.keySet())) {
+            Entity entity = Bukkit.getEntity(id);
+            if (!(entity instanceof LivingEntity mob) || mob.isDead() || !mob.isValid()
+                    || !instanceWorlds.contains(mob.getWorld().getName())) {
+                removeMobHologram(id); continue;
+            }
+            String type = enemyTypes.get(id);
+            if (type == null) { removeMobHologram(id); continue; }
+            updateEnemyName(mob, type);
+        }
+    }
+
+    // Rey Slime: primer salto 10 segundos despues de aparecer; luego 5 segundos tras aterrizar.
+    private void startSlimeBossJump(LivingEntity boss) {
+        if (!getConfig().getBoolean("labyrinth.king-jump.enabled", true)) return;
+        UUID id = boss.getUniqueId();
+        if (slimeBossTasks.containsKey(id)) return;
+        long initial = Math.max(0L, getConfig().getLong("labyrinth.king-jump.first-delay-seconds", 10)) * 20L;
+        long cooldown = Math.max(1L, getConfig().getLong("labyrinth.king-jump.repeat-delay-seconds", 5)) * 20L;
+        org.bukkit.scheduler.BukkitTask task = Bukkit.getScheduler().runTaskTimer(this,
+                new java.util.function.Consumer<org.bukkit.scheduler.BukkitTask>() {
+                    long tick = 0L, nextJump = initial;
+                    boolean airborne = false, climbed = false;
+                    int airTicks = 0;
+                    @Override public void accept(org.bukkit.scheduler.BukkitTask scheduled) {
+                        if (!boss.isValid() || boss.isDead() || !instanceWorlds.contains(boss.getWorld().getName())
+                                || !bosses.getOrDefault(boss.getWorld().getName(), Set.of()).contains(id)) {
+                            slimeBossJumping.remove(id); slimeBossTasks.remove(id); scheduled.cancel(); return;
+                        }
+                        tick += 2L;
+                        if (!airborne && tick >= nextJump) {
+                            airborne = true; climbed = false; airTicks = 0;
+                            slimeBossJumping.add(id);
+                            boss.setFallDistance(0);
+                            double velocity = Math.max(0.4, Math.min(1.8, getConfig().getDouble("labyrinth.king-jump.jump-velocity", 1.25)));
+                            boss.setVelocity(new Vector(0, velocity, 0));
+                            boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_SLIME_JUMP, 1.8f, .6f);
+                        } else if (airborne) {
+                            airTicks += 2;
+                            boss.setFallDistance(0);
+                            boss.getWorld().spawnParticle(Particle.SLIME, boss.getLocation().add(0, .5, 0), 7, .5, .4, .5, 0);
+                            if (!boss.isOnGround()) climbed = true;
+                            // Watchdog: si una IA bloquea la velocidad, no se queda congelada la habilidad.
+                            if ((climbed && boss.isOnGround() && airTicks >= 8) || airTicks > 120) {
+                                airborne = false;
+                                slimeBossJumping.remove(id);
+                                slimeBossImpact(boss);
+                                nextJump = tick + cooldown;
+                            }
+                        }
+                    }
+                }, 2L, 2L);
+        slimeBossTasks.put(id, task);
+    }
+
+    private void slimeBossImpact(LivingEntity boss) {
+        if (!boss.isValid() || boss.isDead()) return;
+        String base = "labyrinth.king-jump.";
+        Location at = boss.getLocation();
+        double radius = Math.max(.5, Math.min(25, getConfig().getDouble(base + "explosion-radius", 5.0)));
+        double normalDamage = Math.max(0, getConfig().getDouble(base + "explosion-damage", 14.0));
+        double difficulty = labyrinthDifficultyFactor(boss.getWorld().getName());
+        boss.getWorld().spawnParticle(Particle.EXPLOSION, at.clone().add(0, .6, 0), 7, radius / 2, .5, radius / 2, 0);
+        boss.getWorld().spawnParticle(Particle.CLOUD, at.clone().add(0, .4, 0), 90, radius / 2, .3, radius / 2, .09);
+        boss.getWorld().playSound(at, Sound.ENTITY_GENERIC_EXPLODE, 1.8f, .8f);
+        for (Player player : fighters(boss.getWorld())) {
+            if (player.isDead() || player.getLocation().distanceSquared(at) > radius * radius) continue;
+            double damage = normalDamage * difficulty;
+            if (getConfig().getBoolean(base + "prevent-lethal", true)) damage = Math.min(damage, Math.max(0, player.getHealth() - 1.0));
+            if (damage > 0) player.damage(damage);
+            Vector push = player.getLocation().toVector().subtract(at.toVector());
+            push.setY(0);
+            if (push.lengthSquared() > .001) push.normalize().multiply(getConfig().getDouble(base + "knockback", .9));
+            push.setY(getConfig().getDouble(base + "vertical-knockback", .45));
+            player.setVelocity(push);
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onSlimeBossFall(EntityDamageEvent event) {
+        if (event.getCause() == EntityDamageEvent.DamageCause.FALL
+                && slimeBossJumping.contains(event.getEntity().getUniqueId())) event.setCancelled(true);
     }
 
     @EventHandler(ignoreCancelled = true)
@@ -2585,6 +2773,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             }
             rollLoot(event, deadType);
         }
+        removeMobHologram(dead);
+        org.bukkit.scheduler.BukkitTask bossTask = slimeBossTasks.remove(dead);
+        if (bossTask != null) bossTask.cancel();
+        slimeBossJumping.remove(dead);
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         kingLanding.remove(dead); kingLastLaunch.remove(dead);
         Set<UUID> active = enemies.get(name);

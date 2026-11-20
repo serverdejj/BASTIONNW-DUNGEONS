@@ -1,0 +1,26 @@
+# Copia o fusiona estas secciones con tu config.yml ACTUAL (no borres otras opciones).
+mob-hologram:
+  enabled: true
+  height: 0.50
+  line-spacing: 0.30
+  scale: 1.0
+  offset-x: 0.0
+  offset-y: 0.0
+  offset-z: 0.0
+  background-opacity: 0
+  shadow: true
+  see-through: false
+  lines:
+    - '{name} &7| &c❤ {health}/{max_health}'
+
+# ESTO VA DENTRO DE labyrinth: YA EXISTENTE, NO CREES OTRO labyrinth:
+#   king-jump:
+#     enabled: true
+#     first-delay-seconds: 10
+#     repeat-delay-seconds: 5
+#     jump-velocity: 1.25
+#     explosion-radius: 5.0
+#     explosion-damage: 14.0
+#     prevent-lethal: true
+#     knockback: 0.9
+#     vertical-knockback: 0.45

@@ -102,6 +102,16 @@ labyrinth:
   player-model-reference-height: 1.8
   enabled: true
   map: 'the-labyrinth' # tambien acepta schematic the_labyrinth.schem
+  king-jump:
+    enabled: true
+    first-delay-seconds: 10
+    repeat-delay-seconds: 5
+    jump-velocity: 1.25
+    explosion-radius: 5.0
+    explosion-damage: 14.0        # VIDA, en Normal; facil x0.5, dificil x2
+    prevent-lethal: true          # nunca deja en menos de 1 punto de vida por la explosion
+    knockback: 0.9
+    vertical-knockback: 0.45
   encounter-boundary-blocks: 15
   encounter:
     teleport-party-on-start: true
@@ -113,6 +123,13 @@ labyrinth:
   mobs:
     mutant:
       mythic-id: BastionSlimeMutant
+      hologram:
+        enabled: true
+        height: 0.50
+        scale: 1.0
+        background-opacity: 0
+        lines:
+          - '{name} &7| &c❤ {health}/{max_health}' 
       display-name: '&#6BFF80&lMutante Slime'
       name-format: '&aMutante Slime'
       health: 100.0
@@ -122,6 +139,13 @@ labyrinth:
       weight: 3.0
     giant:
       mythic-id: BastionSlimeGiant
+      hologram:
+        enabled: true
+        height: 0.50
+        scale: 1.0
+        background-opacity: 0
+        lines:
+          - '{name} &7| &c❤ {health}/{max_health}' 
       display-name: '&#56D985&lSlime Gigante'
       name-format: '&aSlime Gigante'
       health: 250.0
@@ -131,6 +155,13 @@ labyrinth:
       weight: 1.0
     moon:
       mythic-id: BastionSlimeMoon
+      hologram:
+        enabled: true
+        height: 0.50
+        scale: 1.0
+        background-opacity: 0
+        lines:
+          - '{name} &7| &c❤ {health}/{max_health}' 
       display-name: '&#BFA1FF&lSlime Moon'
       name-format: '&aSlime Moon'
       health: 160.0
@@ -141,6 +172,13 @@ labyrinth:
       # Configura el loot legendario con /dungeon loot add BastionSlimeMoon <chance>
     king:
       mythic-id: BastionSlimeKing
+      hologram:
+        enabled: true
+        height: 0.50
+        scale: 1.0
+        background-opacity: 0
+        lines:
+          - '{name} &7| &c❤ {health}/{max_health}' 
       display-name: '&#44FF77&lRey Slime'
       name-format: '&aRey Slime'
       health: 2000.0
@@ -153,17 +191,38 @@ labyrinth:
 # "scale" y "speed" permanecen iguales con cualquier dificultad.
 skeleton-mobs:
   minion:
+    hologram:
+      enabled: true
+      height: 0.50
+      scale: 1.0
+      background-opacity: 0
+      lines:
+        - '{name} &7| &c❤ {health}/{max_health}'
     health: 50.0
     damage: 7.0
     scale: 1.0
     name-format: '&#FFFFFFEsqueleto &#C080F6&lMALDITO'
   knight:
+    hologram:
+      enabled: true
+      height: 0.50
+      scale: 1.0
+      background-opacity: 0
+      lines:
+        - '{name} &7| &c❤ {health}/{max_health}'
     health: 125.0
     damage: 13.0
     scale: 1.0
     speed: 0.32
     name-format: '&#FFFFFFGuardián &#F6BE80&lESQUELETO'
   king:
+    hologram:
+      enabled: true
+      height: 0.50
+      scale: 1.0
+      background-opacity: 0
+      lines:
+        - '{name} &7| &c❤ {health}/{max_health}'
     health: 500.0
     damage: 22.0
     scale: 3.0
@@ -198,3 +257,43 @@ boss-effects:
     interval-ticks: 180
     chance: 0.40
     behind-distance: 3.5
+
+
+# V1.2.33 - Hologramas sobre TODOS los enemigos de Dungeons, incluso con LibsDisguises.
+# Se actualizan automaticamente cuando cambia la vida. No necesitan FancyHolograms.
+# Formato legacy: &a, &l, &#RRGGBB y degradados escritos caracter por caracter.
+mob-hologram:
+  enabled: true
+  height: 0.50                 # bloques por encima de la altura REAL de cada mob
+  line-spacing: 0.30
+  scale: 1.0
+  offset-x: 0.0
+  offset-y: 0.0
+  offset-z: 0.0
+  background-opacity: 0        # 0 transparente, 255 opaco
+  shadow: true
+  see-through: false
+  lines:
+    - '{name} &7| &c❤ {health}/{max_health}'
+
+# Cada tipo puede tener hologram.lines, scale, height, line-spacing y line-settings
+# como se muestra abajo, dentro de labyrinth.mobs.<tipo> / skeleton-mobs.<tipo>.
+# En line-settings: la clave 1 es la primera linea, 2 la segunda, etc.
+# Ejemplo para poner encima de labyrinth.mobs.mutant: 
+#   hologram:
+#     enabled: true
+#     height: 0.7
+#     lines:
+#       - '&#6BFF80&l{name}'
+#       - '&c❤ {health}/{max_health}'
+#     line-settings:
+#       1:
+#         scale: 1.1
+#         height: 0.9
+#       2:
+#         scale: 0.7
+#         height: 0.4
+
+# Habilidad exclusiva de BastionSlimeKing en The Labyrinth.
+# Tiempo inicial: 10 segundos tras aparecer. Luego: 5 segundos tras cada aterrizaje.
+# Explosion visual SIN destruccion de bloques, sin fuego y sin daño letal por defecto.
