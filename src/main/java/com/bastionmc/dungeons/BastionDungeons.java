@@ -255,7 +255,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<String> options = new ArrayList<>();
         if (args.length == 1) {
             options.addAll(List.of("party", "go", "leave"));
-            if (player.isOp()) options.addAll(List.of("loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "boss"));
+            if (player.isOp()) options.addAll(List.of("map", "loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "boss"));
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
@@ -263,6 +263,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             options.add("map");
             for (File f : availableMaps()) options.add(mapId(f));
         }
+        else if (player.isOp() && args[0].equalsIgnoreCase("map") && args.length == 2) {
+            for (File f : availableMaps()) options.add(mapId(f));
+        }
+        else if (player.isOp() && args[0].equalsIgnoreCase("map") && args.length == 3) options.addAll(List.of("facil", "normal", "dificil"));
+        else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 4 && args[1].equalsIgnoreCase("map")) options.addAll(List.of("facil", "normal", "dificil"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("setspawn")) options.add("parkour");
         else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 3 && args[1].equalsIgnoreCase("map")) {
             for (File f : availableMaps()) options.add(mapId(f));
@@ -803,6 +808,51 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }, 100L);
     }
 
+    private Difficulty parseManualDifficulty(String input) {
+        if (input == null) return null;
+        return switch (input.toLowerCase(Locale.ROOT)) {
+            case "facil", "easy" -> Difficulty.EASY;
+            case "normal" -> Difficulty.NORMAL;
+            case "dificil", "hard" -> Difficulty.HARD;
+            default -> null;
+        };
+    }
+
+    // OP-only direct map selection; does not open the voting inventory.
+    private boolean adminStartMap(Player p, String desired, String requestedDifficulty) {
+        if (!p.isOp()) { msg(p, "&cSolo los OP pueden seleccionar mapas manualmente."); return true; }
+        List<File> schems = availableMaps();
+        if (desired == null || desired.isBlank()) {
+            msg(p, "&eMapas disponibles: &f" + schems.stream().map(this::mapId).collect(java.util.stream.Collectors.joining(", ")));
+            msg(p, "&eUsa /dungeon map <mapa> <facil|normal|dificil>");
+            return true;
+        }
+        if (requestedDifficulty == null) {
+            msg(p, "&eElige una dificultad: /dungeon map " + desired + " <facil|normal|dificil>");
+            return true;
+        }
+        Difficulty difficulty = parseManualDifficulty(requestedDifficulty);
+        if (difficulty == null) { msg(p, "&cDificultad no válida: &f" + requestedDifficulty); return true; }
+        File chosen = schems.stream().filter(f -> mapId(f).equalsIgnoreCase(desired)
+                || f.getName().equalsIgnoreCase(desired)).findFirst().orElse(null);
+        if (chosen == null) { msg(p, "&cMapa no encontrado: &f" + desired); return true; }
+        UUID id = p.getUniqueId();
+        if (!leader(id).equals(id)) { msg(p, "&cSolo el líder del equipo puede iniciar la partida."); return true; }
+        List<Player> team = members(id);
+        if (team.stream().anyMatch(q -> !q.isOnline() || playingWorld.containsKey(q.getUniqueId())
+                || preparing.contains(q.getUniqueId()) || voterSessions.containsKey(q.getUniqueId()))) {
+            msg(p, "&cUn miembro ya está en partida o en preparación."); return true;
+        }
+        for (Player member : team) {
+            pendingDifficulties.put(member.getUniqueId(), difficulty);
+            if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
+            msg(member, "&aMapa: &f" + mapId(chosen) + " &7| &dDificultad: &f" + difficulty.name());
+        }
+        saveSchedule();
+        beginLobbyCountdown(team, chosen);
+        return true;
+    }
+
     @Override public boolean onCommand(CommandSender sender, Command cmd, String label, String[] args) {
         if (!(sender instanceof Player p)) { sender.sendMessage("Solo jugadores."); return true; }
         UUID id = p.getUniqueId();
@@ -942,6 +992,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (session != null) { cancelVote(session, "Votación cancelada: un integrante salió."); return true; }
             leave(p); return true;
         }
+        if (args[0].equalsIgnoreCase("map")) {
+            return adminStartMap(p, args.length >= 2 ? args[1] : null, args.length >= 3 ? args[2] : null);
+        }
         if (args[0].equalsIgnoreCase("go")) {
             // OP may select a specific schematic, including outside the public opening window.
             // Normal /dungeon go remains random with the original restrictions.
@@ -958,7 +1011,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (schems.isEmpty()) { msg(p,"Pon archivos .schem en plugins/BastionDungeons/schematics/"); return true; }
             File chosen;
             if (selecting) {
-                String desired = args.length == 3 && args[1].equalsIgnoreCase("map") ? args[2] : args.length == 2 ? args[1] : null;
+                String desired = args.length >= 3 && args[1].equalsIgnoreCase("map") ? args[2] : args.length == 2 ? args[1] : null;
                 if (desired == null || desired.equalsIgnoreCase("map")) {
                     msg(p, messageText("admin-map-list", "&eMapas disponibles: &f{maps}")
                             .replace("{maps}", schems.stream().map(this::mapId).collect(java.util.stream.Collectors.joining(", "))));
@@ -976,8 +1029,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             // Preserve the existing reservation and voting/countdown workflow.
             for (Player member : team) if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
             saveSchedule();
-            // Manual OP path: normal difficulty, without any voting inventory.
-            for (Player member : team) pendingDifficulties.put(member.getUniqueId(), Difficulty.NORMAL);
+            // Manual OP path: optional difficulty, without any voting inventory.
+            String key = args.length == 4 && args[1].equalsIgnoreCase("map") ? args[3] : "normal";
+            Difficulty manualDifficulty = parseManualDifficulty(key);
+            if (manualDifficulty == null) {
+                msg(p, "&cDificultad no válida. Usa facil, normal o dificil."); return true;
+            }
+            for (Player member : team) pendingDifficulties.put(member.getUniqueId(), manualDifficulty);
             beginLobbyCountdown(team, chosen);
             return true;
         }
