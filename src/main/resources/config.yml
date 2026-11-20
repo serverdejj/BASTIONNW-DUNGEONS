@@ -5,10 +5,13 @@
 difficulty:
   easy:
     health-multiplier: 0.5
+    damage-multiplier: 0.5
   normal:
     health-multiplier: 1.0
+    damage-multiplier: 1.0
   hard:
     health-multiplier: 2.0
+    damage-multiplier: 2.0
 
 # Cada intervalo se mueve el enemigo más lejano de su jugador más cercano.
 enemy-stalking:
@@ -111,6 +114,7 @@ labyrinth:
     mutant:
       mythic-id: BastionSlimeMutant
       display-name: '&#6BFF80&lMutante Slime'
+      name-format: '&aMutante Slime'
       health: 100.0
       damage: 9.0
       height-blocks: 0.75
@@ -119,6 +123,7 @@ labyrinth:
     giant:
       mythic-id: BastionSlimeGiant
       display-name: '&#56D985&lSlime Gigante'
+      name-format: '&aSlime Gigante'
       health: 250.0
       damage: 16.0
       height-blocks: 1.5
@@ -127,6 +132,7 @@ labyrinth:
     moon:
       mythic-id: BastionSlimeMoon
       display-name: '&#BFA1FF&lSlime Moon'
+      name-format: '&aSlime Moon'
       health: 160.0
       damage: 13.0
       height-blocks: 0.9
@@ -136,10 +142,37 @@ labyrinth:
     king:
       mythic-id: BastionSlimeKing
       display-name: '&#44FF77&lRey Slime'
+      name-format: '&aRey Slime'
       health: 2000.0
       damage: 35.0
       height-blocks: 3.0
       speed-multiplier: 0.5
+
+# Ajustes individuales de los antiguos esqueletos de EndlessXL.
+# NORMAL = valores base; FACIL aplica x0.5 y DIFICIL x2 a VIDA y DANO.
+# "scale" y "speed" permanecen iguales con cualquier dificultad.
+skeleton-mobs:
+  minion:
+    health: 50.0
+    damage: 7.0
+    scale: 1.0
+    name-format: '&#FFFFFFEsqueleto &#C080F6&lMALDITO'
+  knight:
+    health: 125.0
+    damage: 13.0
+    scale: 1.0
+    speed: 0.32
+    name-format: '&#FFFFFFGuardián &#F6BE80&lESQUELETO'
+  king:
+    health: 500.0
+    damage: 22.0
+    scale: 3.0
+    name-format: '&#FFFFFFRey &#FF0000&lESQUELETO'
+
+# Nombre con vida actualizada; aplica a los Slimes y esqueletos dentro de dungeons.
+# Nota: LibsDisguises puede ocultar el nombre nativo en disfraces de jugador.
+mob-nameplate:
+  format: '{name} &7| &c❤ {health}/{max_health}'
 
 # Jefe SkeletonKing / SkeletolKing: efectos especiales sin romper bloques.
 # Se aplican a los jefes invocados por Dungeons; no a mobs sueltos de Survival.

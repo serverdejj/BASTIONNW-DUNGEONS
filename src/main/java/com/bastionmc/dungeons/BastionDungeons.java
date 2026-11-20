@@ -169,7 +169,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 .replace("{your_vote}", session.votes.get(viewer.getUniqueId()) == d ? "✔" : ""));
     }
     private double difficultyMultiplier(Difficulty d, String key, double fallback) {
-        return difficultiesConfig.getDouble("difficulty." + d.name().toLowerCase(Locale.ROOT) + "." + key, fallback);
+        String path = "difficulty." + d.name().toLowerCase(Locale.ROOT) + "." + key;
+        // Vida y dano editables en config.yml, sin requerir modificar difficulties.yml.
+        if ((key.equals("health-multiplier") || key.equals("damage-multiplier")) && getConfig().contains(path))
+            return getConfig().getDouble(path, fallback);
+        return difficultiesConfig.getDouble(path, fallback);
     }
 
     @Override public void onEnable() {
@@ -765,11 +769,38 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private double labyrinthDifficultyFactor(String instance) {
-        return switch (worldDifficulties.getOrDefault(instance, Difficulty.NORMAL)) {
-            case EASY -> 0.5;
-            case NORMAL -> 1.0;
-            case HARD -> 2.0;
+        Difficulty d = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+        return difficultyMultiplier(d, "damage-multiplier",
+                d == Difficulty.EASY ? 0.5 : d == Difficulty.HARD ? 2.0 : 1.0);
+    }
+
+    // Estadisticas de Esqueletos independientes de los Slimes.
+    private String skeletonMobPath(String mobId) {
+        return switch (mobId) {
+            case "SkeletalMinion" -> "skeleton-mobs.minion";
+            case "SkeletalKnight" -> "skeleton-mobs.knight";
+            case "SkeletonKing", "SkeletolKing" -> "skeleton-mobs.king";
+            default -> null;
         };
+    }
+
+    private void configureSkeletonMob(LivingEntity mob, String mobId) {
+        String path = skeletonMobPath(mobId);
+        if (path == null) return;
+        double baseHealth = mobId.equals("SkeletalMinion") ? 50.0 : mobId.equals("SkeletalKnight") ? 125.0 : 500.0;
+        setEnemyHealth(mob, getConfig().getDouble(path + ".health", baseHealth));
+        var scale = mob.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+        if (scale != null) {
+            // Se configura la escala vanilla del mob; LibsDisguises puede tener limitaciones visuales.
+            double defaultScale = mobId.equals("SkeletonKing") || mobId.equals("SkeletolKing")
+                    ? getConfig().getDouble("boss-effects.scale", 3.0) : 1.0;
+            scale.setBaseValue(Math.max(0.1, Math.min(16.0,
+                    getConfig().getDouble(path + ".scale", defaultScale))));
+        }
+        var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
+        if (speed != null && getConfig().contains(path + ".speed")) {
+            speed.setBaseValue(Math.max(0.001, Math.min(1.0, getConfig().getDouble(path + ".speed"))));
+        }
     }
 
     private void configureLabyrinthMob(LivingEntity mob, String mobId) {
@@ -829,14 +860,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             try {
                 LivingEntity mob = spawnMythic(mobId, pos);
                 if (labyrinth) configureLabyrinthMob(mob, mobId);
-                else {
-                    setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
-                    if (mobId.equalsIgnoreCase("SkeletalKnight") || mobId.equalsIgnoreCase("SkeletalKingt")) {
-                        var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
-                        if (speed != null) speed.setBaseValue(Math.max(0.05, Math.min(0.7,
-                                getConfig().getDouble("adventure.encounter.skeletal-knight-speed", 0.32))));
-                    }
-                }
+                else configureSkeletonMob(mob, mobId);
                 active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
                 spawned++;
@@ -923,8 +947,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     : getConfig().getString("adventure.boss-id", "SkeletonKing");
             try {
                 LivingEntity boss = spawnEpicBoss(mobId, bossAt,
-                        Math.max(1, getConfig().getDouble(labyrinth ? "labyrinth.mobs.king.health" : "adventure.boss-health", 500.0)), trigger);
+                        Math.max(1, getConfig().getDouble(labyrinth ? "labyrinth.mobs.king.health" : "skeleton-mobs.king.health", 500.0)), trigger);
                 if (labyrinth) configureLabyrinthMob(boss, mobId);
+                else configureSkeletonMob(boss, mobId);
                 bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(boss.getUniqueId());
                 enemyTypes.put(boss.getUniqueId(), mobId);
                 updateEnemyName(boss, mobId);
@@ -1809,13 +1834,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 yield path == null ? "" : format(getConfig().getString(path + ".display-name", "&a" + mobType));
             }
         };
+        String mobPath = labyrinthMobPath(mobType);
+        if (mobPath == null) mobPath = skeletonMobPath(mobType);
+        if (mobPath != null && getConfig().contains(mobPath + ".name-format"))
+            name = format(getConfig().getString(mobPath + ".name-format", "&f" + mobType));
         if (name.isEmpty()) return;
         var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
         double max = maxHealth == null ? mob.getHealth() : maxHealth.getValue();
         
         long hp = Math.max(0L, (long) Math.ceil(mob.getHealth() + mob.getAbsorptionAmount()));
-        long total = Math.max(1L, (long) Math.ceil(max));
-        mob.setCustomName(name + ChatColor.GRAY + " | " + ChatColor.RED + "❤ " + hp + "/" + total);
+        long total = Math.max(1L, (long) Math.ceil(max + mob.getAbsorptionAmount()));
+        String namePattern = getConfig().getString("mob-nameplate.format", "{name} &7| &c❤ {health}/{max_health}");
+        mob.setCustomName(format(namePattern.replace("{name}", name)
+                .replace("{health}", String.valueOf(hp))
+                .replace("{max_health}", String.valueOf(total))));
         mob.setCustomNameVisible(true);
     }
 
@@ -1978,16 +2010,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
-    public void onLabyrinthSlimeHit(EntityDamageByEntityEvent event) {
+    public void onConfiguredDungeonMobHit(EntityDamageByEntityEvent event) {
         if (!(event.getEntity() instanceof Player) || !(event.getDamager() instanceof LivingEntity attacker)) return;
         String world = attacker.getWorld().getName();
-        if (!isLabyrinth(world) || !instanceWorlds.contains(world)) return;
+        if (!instanceWorlds.contains(world)) return;
         String type = enemyTypes.get(attacker.getUniqueId());
-        String path = type == null ? null : labyrinthMobPath(type);
+        if (type == null) return;
+        String path = isLabyrinth(world) ? labyrinthMobPath(type) : skeletonMobPath(type);
         if (path == null) return;
-        // Solo golpe cuerpo a cuerpo; habilidades MythicMobs pueden tener daños propios.
+        // Solo ataques directos: las habilidades personalizadas de MythicMobs son independientes.
         double normalDamage = getConfig().getDouble(path + ".damage", 10.0);
-        event.setDamage(Math.max(0, normalDamage * labyrinthDifficultyFactor(world)));
+        double factor = isLabyrinth(world) ? labyrinthDifficultyFactor(world)
+                : difficultyMultiplier(worldDifficulties.getOrDefault(world, Difficulty.NORMAL),
+                        "damage-multiplier", 1.0);
+        event.setDamage(Math.max(0, normalDamage * factor));
     }
 
     // Las instancias son de solo lectura: proteger la estructura y a los compañeros.
@@ -2314,7 +2350,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             try {
                 String mobId = random.nextBoolean() ? "SkeletalMinion" : "SkeletalKnight";
                 LivingEntity mob = spawnMythic(mobId, loc);
-                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
+                configureSkeletonMob(mob, mobId);
                 active.add(mob.getUniqueId());
                 enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
@@ -2521,8 +2557,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             Location loc = enemySpawnLocation(world, players.get(i % players.size()).getLocation());
             if (loc == null) { getLogger().warning("No hay lugar para SkeletonKing en " + name); continue; }
             try {
-                LivingEntity boss = spawnEpicBoss("SkeletonKing", loc, 500,
+                LivingEntity boss = spawnEpicBoss("SkeletonKing", loc,
+                        getConfig().getDouble("skeleton-mobs.king.health", getConfig().getDouble("adventure.boss-health", 500)),
                         fighters(world).isEmpty() ? null : fighters(world).get(0));
+                configureSkeletonMob(boss, "SkeletonKing");
                 spawnedBosses.add(boss.getUniqueId());
                 updateEnemyName(boss, "SkeletonKing");
             } catch (Exception ex) { getLogger().log(java.util.logging.Level.WARNING, "Error al crear SkeletonKing", ex); }
