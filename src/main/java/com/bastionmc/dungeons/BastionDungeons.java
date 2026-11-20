@@ -810,7 +810,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             VoteSession session = voterSessions.get(id);
             if (session != null) { showVoteMenu(p, session); return true; }
             if (!leader(id).equals(id)) { msg(p, "El líder debe abrir la votación con /dungeon."); return true; }
-            return onCommand(sender, cmd, label, new String[]{"go"});
+            msg(p, "&dSelecciona una dificultad en los bloques de ruleta del Spawn.");
+            return true;
         }
         if (args[0].equalsIgnoreCase("romper") || args[0].equalsIgnoreCase("libre")) {
             if (!p.isOp()) { msg(p, messageText("admin-edit-denied", "&cSolo administradores OP.")); return true; }
@@ -946,7 +947,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             // Normal /dungeon go remains random with the original restrictions.
             boolean selecting = args.length > 1;
             if (selecting && !p.isOp()) { msg(p, messageText("admin-map-denied", "&cSolo los OP pueden elegir un mapa.")); return true; }
-            if (!selecting && !canJoin(p)) return true;
+            if (!selecting) { msg(p, "&dEntra a la mazmorra usando uno de los tres bloques de dificultad."); return true; }
             if (!leader(id).equals(id)) { msg(p,"Solo el lider puede iniciar."); return true; }
             List<Player> team = members(id);
             if (!selecting && team.stream().anyMatch(q -> !canJoin(q))) { msg(p, "Algún miembro no tiene acceso a esta apertura."); return true; }
@@ -975,10 +976,39 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             // Preserve the existing reservation and voting/countdown workflow.
             for (Player member : team) if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
             saveSchedule();
-            beginDifficultyVote(team, chosen);
+            // Manual OP path: normal difficulty, without any voting inventory.
+            for (Player member : team) pendingDifficulties.put(member.getUniqueId(), Difficulty.NORMAL);
+            beginLobbyCountdown(team, chosen);
             return true;
         }
         msg(p,"Comando desconocido."); return true;
+    }
+
+    /** Entry point for BastionMCDungeonRoulette; skips difficulty GUI only for this entry. */
+    public boolean startRouletteDungeon(Player p, String mapName, String difficultyKey) {
+        if (p == null || !p.isOnline() || !p.hasPermission("bastiondungeons.use")) return false;
+        if (!leader(p.getUniqueId()).equals(p.getUniqueId())) {
+            msg(p, "&cSolo el líder del equipo puede activar la ruleta."); return false;
+        }
+        Difficulty difficulty;
+        try { difficulty = Difficulty.valueOf(difficultyKey.toUpperCase(Locale.ROOT)); }
+        catch (IllegalArgumentException ex) { msg(p, "&cDificultad inválida."); return false; }
+        List<Player> team = members(p.getUniqueId());
+        if (team.isEmpty() || team.stream().anyMatch(q -> !q.isOnline() || !canJoin(q))) return false;
+        if (team.stream().anyMatch(q -> playingWorld.containsKey(q.getUniqueId())
+                || preparing.contains(q.getUniqueId()) || voterSessions.containsKey(q.getUniqueId()))) {
+            msg(p, "&cAlguien ya está en partida o en preparación."); return false;
+        }
+        File file = availableMaps().stream().filter(f -> mapId(f).equalsIgnoreCase(mapName)).findFirst().orElse(null);
+        if (file == null) { msg(p, "&cMapa no encontrado: &f" + mapName); return false; }
+        for (Player member : team) {
+            pendingDifficulties.put(member.getUniqueId(), difficulty);
+            if (!bypass(member)) enteredThisWindow.add(member.getUniqueId());
+            msg(member, "&aRuleta: &f" + mapId(file) + " &7| &d" + difficultyKey.toUpperCase(Locale.ROOT));
+        }
+        saveSchedule();
+        beginLobbyCountdown(team, file);
+        return true;
     }
 
     private void openDungeonMenu(Player p) {
