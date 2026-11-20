@@ -94,6 +94,9 @@ adventure:
 # La altura (height-blocks) y la velocidad NO cambian segun la dificultad.
 # Los mythic-id deben existir en plugins/MythicMobs/Mobs/ (ver plantilla adjunta).
 labyrinth:
+  # Referencia del modelo de jugador usado por LibsDisguises (1.8 bloques).
+  # Para alturas uniformes, usa los mobs Type: ZOMBIE de la plantilla actualizada.
+  player-model-reference-height: 1.8
   enabled: true
   map: 'the-labyrinth' # tambien acepta schematic the_labyrinth.schem
   encounter-boundary-blocks: 15

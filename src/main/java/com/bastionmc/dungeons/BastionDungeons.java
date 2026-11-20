@@ -776,15 +776,21 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String path = labyrinthMobPath(mobId);
         if (path == null) return;
         setEnemyHealth(mob, getConfig().getDouble(path + ".health", 50));
+        // Nunca calcular la escala sobre la caja actual de un Slime: MythicMobs
+        // puede generarlos en tamaños distintos y el disfraz de jugador amplifica
+        // esa diferencia. Normalizamos también los YAML antiguos Type: SLIME.
+        if (mob instanceof org.bukkit.entity.Slime slime) slime.setSize(1);
         var scale = mob.getAttribute(org.bukkit.attribute.Attribute.SCALE);
         if (scale != null) {
-            double newScale = getConfig().getDouble(path + ".scale", 1.0);
-            if (getConfig().contains(path + ".height-blocks")) {
-                // Ajustar hitbox real a la altura pedida, sobre el tamaño actual de MythicMobs.
-                double actualHeight = Math.max(0.05, mob.getBoundingBox().getHeight());
-                double desired = Math.max(0.2, getConfig().getDouble(path + ".height-blocks", actualHeight));
-                newScale = scale.getBaseValue() * desired / actualHeight;
-            }
+            // Los cuatro personajes usan un disfraz de jugador (modelo de 1.8 bloques).
+            // Al usar ZOMBIE como entidad base en MythicMobs, el hitbox y la
+            // referencia de escala también son consistentes entre invocaciones.
+            double referenceHeight = Math.max(0.1, getConfig().getDouble(
+                    "labyrinth.player-model-reference-height", 1.8));
+            double desiredHeight = Math.max(0.2, getConfig().getDouble(
+                    path + ".height-blocks", referenceHeight));
+            double multiplier = getConfig().getDouble(path + ".scale-multiplier", 1.0);
+            double newScale = (desiredHeight / referenceHeight) * Math.max(0.01, multiplier);
             scale.setBaseValue(Math.max(0.1, Math.min(16.0, newScale)));
         }
         var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);

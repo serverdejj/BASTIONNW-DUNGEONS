@@ -1,35 +1,45 @@
-# Copia este archivo a plugins/MythicMobs/Mobs/BastionLabyrinthSlimes.yml
-# Mobs provisionales de tipo SLIME. Las skins/modelos finales se incorporan cuando los compartas.
-# Vida, dano, escala y velocidad: BastionDungeons las aplica segun su config.yml al invocarlos.
+# BASTION MC - The Labyrinth: mobs con modelo base uniforme.
+# Usa Type: ZOMBIE para evitar los tamanos aleatorios de SLIME.
+# LibsDisguises muestra las skins de jugador; BastionDungeons ajusta
+# altura, vida, dano y velocidad en el mundo de la mazmorra segun config.yml.
+# Debes haber registrado las skins: SlimeMutante, SlimeGigante, SlimeMoon, ReySlime.
+# NO mantengas otro archivo que defina los mismos IDs simultaneamente.
 BastionSlimeMutant:
-  Type: SLIME
+  Type: ZOMBIE
   Display: '&aMutante Slime'
   Health: 100
   Damage: 9
+  Disguise: 'player SlimeMutante setSkin SlimeMutante'
   Options:
     PreventOtherDrops: true
-    PreventSlimeSplit: true
+    PreventSunburn: true
+
 BastionSlimeGiant:
-  Type: SLIME
+  Type: ZOMBIE
   Display: '&aSlime Gigante'
   Health: 250
   Damage: 16
+  Disguise: 'player SlimeGigante setSkin SlimeGigante'
   Options:
     PreventOtherDrops: true
-    PreventSlimeSplit: true
+    PreventSunburn: true
+
 BastionSlimeMoon:
-  Type: SLIME
+  Type: ZOMBIE
   Display: '&dSlime Moon'
   Health: 160
   Damage: 13
+  Disguise: 'player SlimeMoon setSkin SlimeMoon'
   Options:
     PreventOtherDrops: true
-    PreventSlimeSplit: true
+    PreventSunburn: true
+
 BastionSlimeKing:
-  Type: SLIME
+  Type: ZOMBIE
   Display: '&2Rey Slime'
   Health: 2000
   Damage: 35
+  Disguise: 'player ReySlime setSkin ReySlime'
   Options:
     PreventOtherDrops: true
-    PreventSlimeSplit: true
+    PreventSunburn: true
