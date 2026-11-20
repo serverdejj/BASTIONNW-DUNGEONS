@@ -1974,15 +1974,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (slimeBossTasks.containsKey(id)) return;
         long initial = Math.max(0L, getConfig().getLong("labyrinth.king-jump.first-delay-seconds", 10)) * 20L;
         long cooldown = Math.max(1L, getConfig().getLong("labyrinth.king-jump.repeat-delay-seconds", 5)) * 20L;
-        org.bukkit.scheduler.BukkitTask task = Bukkit.getScheduler().runTaskTimer(this,
-                new java.util.function.Consumer<org.bukkit.scheduler.BukkitTask>() {
+        org.bukkit.scheduler.BukkitTask task = new org.bukkit.scheduler.BukkitRunnable() {
                     long tick = 0L, nextJump = initial;
                     boolean airborne = false, climbed = false;
                     int airTicks = 0;
-                    @Override public void accept(org.bukkit.scheduler.BukkitTask scheduled) {
+                    @Override public void run() {
                         if (!boss.isValid() || boss.isDead() || !instanceWorlds.contains(boss.getWorld().getName())
                                 || !bosses.getOrDefault(boss.getWorld().getName(), Set.of()).contains(id)) {
-                            slimeBossJumping.remove(id); slimeBossTasks.remove(id); scheduled.cancel(); return;
+                            slimeBossJumping.remove(id); slimeBossTasks.remove(id); cancel(); return;
                         }
                         tick += 2L;
                         if (!airborne && tick >= nextJump) {
@@ -1995,7 +1994,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         } else if (airborne) {
                             airTicks += 2;
                             boss.setFallDistance(0);
-                            boss.getWorld().spawnParticle(Particle.SLIME, boss.getLocation().add(0, .5, 0), 7, .5, .4, .5, 0);
+                            boss.getWorld().spawnParticle(Particle.BLOCK, boss.getLocation().add(0, .5, 0), 7, .5, .4, .5, 0, Material.SLIME_BLOCK.createBlockData());
                             if (!boss.isOnGround()) climbed = true;
                             // Watchdog: si una IA bloquea la velocidad, no se queda congelada la habilidad.
                             if ((climbed && boss.isOnGround() && airTicks >= 8) || airTicks > 120) {
@@ -2006,7 +2005,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             }
                         }
                     }
-                }, 2L, 2L);
+                }.runTaskTimer(this, 2L, 2L);
         slimeBossTasks.put(id, task);
     }
 
