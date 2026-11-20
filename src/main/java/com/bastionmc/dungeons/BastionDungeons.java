@@ -1904,8 +1904,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!getConfig().getBoolean(local + ".enabled", getConfig().getBoolean("mob-hologram.enabled", true))) {
             removeMobHologram(mob.getUniqueId()); return;
         }
-        List<String> patterns = getConfig().getStringList(local + ".lines");
-        if (patterns.isEmpty()) patterns = getConfig().getStringList("mob-hologram.lines");
+        // Solo usar las lineas individuales cuando el administrador las define
+        // explicitamente en config.yml. getStringList() sin esta comprobacion
+        // tambien lee los defaults integrados en el JAR, que tenian el simbolo
+        // de corazon y anulaban los cambios de mob-hologram.lines tras reload.
+        List<String> patterns = getConfig().isSet(local + ".lines")
+                ? getConfig().getStringList(local + ".lines")
+                : getConfig().getStringList("mob-hologram.lines");
         if (patterns.isEmpty()) patterns = List.of("{name} &7| &c❤ {health}/{max_health}");
         final List<String> templates = patterns;
         List<TextDisplay> displays = mobHolograms.computeIfAbsent(mob.getUniqueId(), k -> new ArrayList<>());
