@@ -1,0 +1,19 @@
+ATENCION: conserva tu config.yml real de Holy Hosting.
+El config.yml en src/main/resources/ contiene la nueva sección labyrinth:.
+Copia SOLO la sección completa labyrinth: a plugins/BastionDungeons/config.yml.
+No reemplaces todo el config si ya has hecho cambios.
+
+Para registrar MythicMobs, copia MythicMobs-BastionLabyrinthSlimes-EJEMPLO.yml
+como plugins/MythicMobs/Mobs/BastionLabyrinthSlimes.yml, y recarga MythicMobs.
+Los SLIME provisionales no llevan skins: pásame los PNG luego para integrarlas.
+
+Entra como OP a The Labyrinth:
+/dungeon map the-labyrinth normal
+/dungeon radio 15 oleadas 2
+(repite en otras zonas)
+/dungeon boss spawn
+/dungeon boss bloque (hasta 3)
+/dungeons reload
+
+Los ajustes dentro de una partida ya iniciada pueden aplicarse a nuevos encuentros;
+prueba las nuevas estadísticas iniciando otra partida.

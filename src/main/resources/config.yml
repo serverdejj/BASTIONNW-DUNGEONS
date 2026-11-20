@@ -88,6 +88,56 @@ adventure:
   boss-health: 500.0
   boss-radius-blocks: 100
 
+
+# THE LABYRINTH: aventura de Slimes, separada de EndlessXL.
+# La dificultad solo multiplica VIDA y DANO (facil 0.5x / normal 1x / dificil 2x).
+# La altura (height-blocks) y la velocidad NO cambian segun la dificultad.
+# Los mythic-id deben existir en plugins/MythicMobs/Mobs/ (ver plantilla adjunta).
+labyrinth:
+  enabled: true
+  map: 'the-labyrinth' # tambien acepta schematic the_labyrinth.schem
+  encounter-boundary-blocks: 15
+  encounter:
+    teleport-party-on-start: true
+    # /dungeon radio 15 oleadas 2 = 1 inicial + 2 adicionales (3 totales).
+    default-extra-waves: 2
+    wave-counts: [5, 10, 15]
+    next-wave-delay-seconds: 3
+    mob-return-delay-ticks: 20
+  mobs:
+    mutant:
+      mythic-id: BastionSlimeMutant
+      display-name: '&#6BFF80&lMutante Slime'
+      health: 100.0
+      damage: 9.0
+      height-blocks: 0.75
+      speed-multiplier: 1.67
+      weight: 3.0
+    giant:
+      mythic-id: BastionSlimeGiant
+      display-name: '&#56D985&lSlime Gigante'
+      health: 250.0
+      damage: 16.0
+      height-blocks: 1.5
+      speed-multiplier: 0.8
+      weight: 1.0
+    moon:
+      mythic-id: BastionSlimeMoon
+      display-name: '&#BFA1FF&lSlime Moon'
+      health: 160.0
+      damage: 13.0
+      height-blocks: 0.9
+      speed-multiplier: 0.5
+      spawn-chance-percent: 1.0
+      # Configura el loot legendario con /dungeon loot add BastionSlimeMoon <chance>
+    king:
+      mythic-id: BastionSlimeKing
+      display-name: '&#44FF77&lRey Slime'
+      health: 2000.0
+      damage: 35.0
+      height-blocks: 3.0
+      speed-multiplier: 0.5
+
 # Jefe SkeletonKing / SkeletolKing: efectos especiales sin romper bloques.
 # Se aplican a los jefes invocados por Dungeons; no a mobs sueltos de Survival.
 boss-effects:

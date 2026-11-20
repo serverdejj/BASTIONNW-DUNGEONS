@@ -25,7 +25,7 @@ admin-free-off: '&#FF5555Modo libre desactivado.'
 
 # Textos del modo aventura (admiten & y &#RRGGBB).
 adventure-admin-denied: '&cSolo los OP pueden configurar la aventura.'
-adventure-wrong-map: '&cEstos comandos se usan dentro de una partida de dungeon1-endlessxl.'
+adventure-wrong-map: '&cUsa estos comandos dentro de EndlessXL o The Labyrinth.'
 adventure-start: '&#679AFF&lAVENTURA &fAvanza y supera cada encuentro para llegar al jefe final.'
 adventure-zone-saved: '&#55FFAAZona #{number} guardada, radio {radius} bloques.'
 adventure-zones-cleared: '&eSe han eliminado todas las zonas de este mapa.'
@@ -48,3 +48,6 @@ vote-must-vote: '&eVota una dificultad antes de cerrar este menú.'
 
 # EndlessXL - equipo reunido en una emboscada
 adventure-party-gathered: "&#55CCFFTu equipo inicio una emboscada. &fHas sido reunido con ellos."
+
+# Administracion /dungeons reload (OP)
+admin-reload: '&#55FFAAConfiguraciones de BastionDungeons recargadas.'

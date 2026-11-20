@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.29-rey-maldito
+version: 1.2.30-labyrinth-slimes
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
@@ -9,7 +9,7 @@ softdepend: [MythicMobs, LibsDisguises]
 commands:
   dungeon:
     description: Comandos de party y mazmorra
-    usage: /dungeon mobs radio <radio> | /dungeon boss bloque | /dungeon boss spawn | /dungeon romper | libre (OP); /dungeon map <nombre> <facil|normal|dificil> (OP); /dungeon go map <nombre> [dificultad] (OP); /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setspawn parkour; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
+    usage: /dungeon reload (OP) | /dungeon radio 15 oleadas 2 (OP) | /dungeon mobs radio <radio> | /dungeon boss bloque | /dungeon boss spawn | /dungeon romper | libre (OP); /dungeon map <nombre> <facil|normal|dificil> (OP); /dungeon go map <nombre> [dificultad] (OP); /dungeon party add <jugador> | accept | leave | list; /dungeon go; /dungeon leave; /dungeon setspawn; /dungeon setspawn parkour; /dungeon setmobspawn; /dungeon clearmobspawns; /dungeon loot add <enemigo> <probabilidad> | list <enemigo> | remove <enemigo> <id>
     aliases: [dungeons]
 permissions:
   bastiondungeons.use:

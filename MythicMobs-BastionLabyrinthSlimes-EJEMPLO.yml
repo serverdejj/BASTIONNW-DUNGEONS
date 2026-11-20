@@ -1,0 +1,35 @@
+# Copia este archivo a plugins/MythicMobs/Mobs/BastionLabyrinthSlimes.yml
+# Mobs provisionales de tipo SLIME. Las skins/modelos finales se incorporan cuando los compartas.
+# Vida, dano, escala y velocidad: BastionDungeons las aplica segun su config.yml al invocarlos.
+BastionSlimeMutant:
+  Type: SLIME
+  Display: '&aMutante Slime'
+  Health: 100
+  Damage: 9
+  Options:
+    PreventOtherDrops: true
+    PreventSlimeSplit: true
+BastionSlimeGiant:
+  Type: SLIME
+  Display: '&aSlime Gigante'
+  Health: 250
+  Damage: 16
+  Options:
+    PreventOtherDrops: true
+    PreventSlimeSplit: true
+BastionSlimeMoon:
+  Type: SLIME
+  Display: '&dSlime Moon'
+  Health: 160
+  Damage: 13
+  Options:
+    PreventOtherDrops: true
+    PreventSlimeSplit: true
+BastionSlimeKing:
+  Type: SLIME
+  Display: '&2Rey Slime'
+  Health: 2000
+  Damage: 35
+  Options:
+    PreventOtherDrops: true
+    PreventSlimeSplit: true

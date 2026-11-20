@@ -255,7 +255,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<String> options = new ArrayList<>();
         if (args.length == 1) {
             options.addAll(List.of("party", "go", "leave"));
-            if (player.isOp()) options.addAll(List.of("map", "loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "boss"));
+            if (player.isOp()) options.addAll(List.of("map", "loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "radio", "boss", "reload"));
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
@@ -272,12 +272,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         else if (player.isOp() && args[0].equalsIgnoreCase("go") && args.length == 3 && args[1].equalsIgnoreCase("map")) {
             for (File f : availableMaps()) options.add(mapId(f));
         }
+        else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("radio")) options.addAll(List.of("10", "15", "20"));
+        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("radio")) options.add("oleadas");
+        else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("radio")) options.addAll(List.of("0", "1", "2", "3"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("mobs")) options.addAll(List.of("radio", "list", "clear"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("mobs") && args[1].equalsIgnoreCase("radio")) options.addAll(List.of("5", "10", "15", "20"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("boss")) options.addAll(List.of("bloque", "spawn", "list", "clear"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("boss") && args[1].equalsIgnoreCase("clear")) options.addAll(List.of("bloques", "spawn"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("add", "list", "remove"));
-        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
+        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("loot")) {
+            options.addAll(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
+            for (String kind : List.of("mutant", "giant", "moon", "king"))
+                options.add(getConfig().getString("labyrinth.mobs." + kind + ".mythic-id", "BastionSlime" + kind));
+        }
         else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("loot")) {
             if (args[1].equalsIgnoreCase("add")) options.addAll(List.of("5", "10", "25", "50", "100"));
             if (args[1].equalsIgnoreCase("remove")) {
@@ -390,8 +397,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
 
     // Loot configurable por tipo de enemigo, guardado en YAML con todos los metadatos del ItemStack.
     private String lootMob(String raw) {
-        for (String id : List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"))
-            if (id.equalsIgnoreCase(raw)) return id;
+        List<String> ids = new ArrayList<>(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
+        for (String kind : List.of("mutant", "giant", "moon", "king")) {
+            String mob = getConfig().getString("labyrinth.mobs." + kind + ".mythic-id", "");
+            if (mob != null && !mob.isBlank()) ids.add(mob);
+        }
+        for (String id : ids) if (id.equalsIgnoreCase(raw)) return id;
         return null;
     }
 
@@ -399,7 +410,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
         if (args.length < 3) { msg(p, "Uso: /dungeon loot add <enemigo> <porcentaje> | list <enemigo> | remove <enemigo> <id>"); return true; }
         String mob = lootMob(args[2]);
-        if (mob == null) { msg(p, "Enemigos: SkeletalMinion, SkeletalKnight, SkeletonKing."); return true; }
+        if (mob == null) { msg(p, "&cEnemigo desconocido. Usa TAB para ver los IDs de MythicMobs configurados."); return true; }
         var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(lootFile);
         String path = "loot." + mob;
         String action = args[1].toLowerCase(Locale.ROOT);
@@ -449,7 +460,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             org.bukkit.inventory.ItemStack item = cfg.getItemStack(base + ".item");
             double chance = cfg.getDouble(base + ".chance", 0);
             Difficulty difficulty = worldDifficulties.getOrDefault(event.getEntity().getWorld().getName(), Difficulty.NORMAL);
-            chance = Math.min(100.0, Math.max(0.0, chance * difficultyMultiplier(difficulty, "loot-multiplier", difficulty == Difficulty.EASY ? 0.5 : difficulty == Difficulty.HARD ? 2.0 : 1.0)));
+            if (!isLabyrinth(event.getEntity().getWorld().getName()))
+                chance = Math.min(100.0, Math.max(0.0, chance * difficultyMultiplier(difficulty, "loot-multiplier", difficulty == Difficulty.EASY ? 0.5 : difficulty == Difficulty.HARD ? 2.0 : 1.0)));
             if (item != null && !item.getType().isAir() && chance > 0 && random.nextDouble() * 100 < chance)
                 rewards.add(item.clone());
         }
@@ -469,8 +481,22 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String schematic = schematicNames.get(instance);
         if (schematic == null) return false;
         String id = schematic.toLowerCase(Locale.ROOT).replaceFirst("\\.schem$", "");
-        return getConfig().getBoolean("adventure.enabled", true)
-                && id.equalsIgnoreCase(getConfig().getString("adventure.map", "dungeon1-endlessxl"));
+        return (getConfig().getBoolean("adventure.enabled", true)
+                    && id.equalsIgnoreCase(getConfig().getString("adventure.map", "dungeon1-endlessxl")))
+                || (getConfig().getBoolean("labyrinth.enabled", true)
+                    && id.replace('_', '-').equalsIgnoreCase(getConfig().getString("labyrinth.map", "the-labyrinth").replace('_', '-')));
+    }
+
+    private boolean isLabyrinth(String instance) {
+        String schematic = schematicNames.get(instance);
+        if (schematic == null) return false;
+        String id = schematic.toLowerCase(Locale.ROOT).replaceFirst("\\.schem$", "").replace('_', '-');
+        return getConfig().getBoolean("labyrinth.enabled", true)
+                && id.equalsIgnoreCase(getConfig().getString("labyrinth.map", "the-labyrinth").replace('_', '-'));
+    }
+
+    private String adventureConfig(String instance, String suffix) {
+        return (isLabyrinth(instance) ? "labyrinth" : "adventure") + "." + suffix;
     }
 
     private String adventurePath(String instance) {
@@ -500,13 +526,26 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<Encounter> result = new ArrayList<>();
         for (String zone : data.getStringList(base + ".zones")) {
             String[] parts = zone.split(";");
-            if (parts.length != 2) continue;
+            if (parts.length < 2 || parts.length > 3) continue;
             Location point = parseLocation(world, parts[0]);
             if (point == null) continue;
             try { result.add(new Encounter(point, Math.max(1, Double.parseDouble(parts[1])))); }
             catch (NumberFormatException ignored) {}
         }
         return result;
+    }
+
+    private int totalEncounterWaves(String instance, int zoneIndex) {
+        if (!isLabyrinth(instance)) return Math.max(1, getConfig().getInt("adventure.encounter.waves", 2));
+        String base = adventurePath(instance);
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        List<String> zones = cfg.getStringList(base + ".zones");
+        if (zoneIndex >= 0 && zoneIndex < zones.size()) {
+            String[] parts = zones.get(zoneIndex).split(";");
+            if (parts.length == 3) try { return Math.max(1, Math.min(10, Integer.parseInt(parts[2]) + 1)); }
+            catch (NumberFormatException ignored) {}
+        }
+        return Math.max(1, getConfig().getInt("labyrinth.encounter.default-extra-waves", 2) + 1);
     }
 
     private Location adventureBossLocation(String instance) {
@@ -520,26 +559,36 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!player.isOp()) { msg(player, messageText("adventure-admin-denied", "&cSolo los administradores OP pueden configurar la aventura.")); return true; }
         String instance = playingWorld.get(player.getUniqueId());
         if (instance == null || !instance.equals(player.getWorld().getName()) || !isAdventure(instance)) {
-            msg(player, messageText("adventure-wrong-map", "&cDebes estar dentro de una partida de dungeon1-endlessxl.")); return true;
+            msg(player, messageText("adventure-wrong-map", "&cDebes estar dentro de una partida de aventura (EndlessXL o The Labyrinth).")); return true;
         }
         String base = adventurePath(instance);
         var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
-        if (args[0].equalsIgnoreCase("mobs")) {
-            if (args.length == 3 && args[1].equalsIgnoreCase("radio")) {
+        if (args[0].equalsIgnoreCase("mobs") || args[0].equalsIgnoreCase("radio")) {
+            boolean shortSyntax = args[0].equalsIgnoreCase("radio");
+            boolean addZone = shortSyntax ? args.length == 4 && args[2].equalsIgnoreCase("oleadas")
+                    : args.length == 3 && args[1].equalsIgnoreCase("radio");
+            if (addZone) {
                 double radius;
-                try { radius = Double.parseDouble(args[2]); } catch (NumberFormatException ex) { msg(player, "&cRadio invalido. Ejemplo: /dungeon mobs radio 10"); return true; }
+                try { radius = Double.parseDouble(args[shortSyntax ? 1 : 2]); }
+                catch (NumberFormatException ex) { msg(player, "&cRadio invalido. Ejemplo: /dungeon radio 15 oleadas 2"); return true; }
                 if (!Double.isFinite(radius) || radius < 1 || radius > 100) { msg(player, "&cRadio permitido: 1 a 100 bloques."); return true; }
+                int extra = isLabyrinth(instance) ? Math.max(0, getConfig().getInt("labyrinth.encounter.default-extra-waves", 2)) : -1;
+                if (shortSyntax) {
+                    try { extra = Integer.parseInt(args[3]); } catch (NumberFormatException ex) { msg(player, "&cNumero de oleadas invalido."); return true; }
+                    if (extra < 0 || extra > 9) { msg(player, "&cLas oleadas adicionales deben estar entre 0 y 9."); return true; }
+                }
                 List<String> zones = new ArrayList<>(data.getStringList(base + ".zones"));
-                zones.add(locationData(player.getLocation()) + ";" + radius);
+                zones.add(locationData(player.getLocation()) + ";" + radius + (extra >= 0 ? ";" + extra : ""));
                 data.set(base + ".zones", zones);
                 msg(player, messageText("adventure-zone-saved", "&aZona de enemigos #{number} guardada; radio {radius} bloques.")
                         .replace("{number}", "" + zones.size()).replace("{radius}", "" + radius));
+                if (extra >= 0) msg(player, "&aTotal oleadas: &f" + (1 + extra) + " &7(1 inicial + " + extra + " adicionales).");
             } else if (args.length == 2 && args[1].equalsIgnoreCase("clear")) {
                 data.set(base + ".zones", null);
                 msg(player, messageText("adventure-zones-cleared", "&eZonas de enemigos eliminadas de este mapa."));
             } else if (args.length == 2 && args[1].equalsIgnoreCase("list")) {
                 msg(player, "&bZonas de enemigos: &f" + data.getStringList(base + ".zones").size()); return true;
-            } else { msg(player, "&e/dungeon mobs radio <1-100> | list | clear"); return true; }
+            } else { msg(player, "&e/dungeon radio 15 oleadas 2 | /dungeon mobs radio <1-100> | list | clear"); return true; }
         } else if (args[0].equalsIgnoreCase("boss")) {
             if (args.length == 2 && args[1].equalsIgnoreCase("bloque")) {
                 // Marcar el bloque bajo los pies del OP. Maximo 3 activadores.
@@ -579,7 +628,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Integer activeIndex = adventureActiveZone.get(instance);
         if (activeIndex != null && activeIndex < zones.size()) {
             Location center = zones.get(activeIndex).center();
-            double limit = Math.max(2, getConfig().getDouble("adventure.encounter-boundary-blocks", 15));
+            double limit = Math.max(2, getConfig().getDouble(adventureConfig(instance, "encounter-boundary-blocks"), 15));
             if (horizontalDistanceSquared(center, to) > limit * limit && horizontalDistanceSquared(center, to) > horizontalDistanceSquared(center, from)) {
                 msgCooldown(player, "adventure-encounter-boundary", "&cDerrota a todos los enemigos antes de avanzar.");
                 return true;
@@ -588,7 +637,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         if (completed < zones.size()) {
             Encounter next = zones.get(completed);
-            if (next.center().distanceSquared(to) <= next.radius() * next.radius()) startAdventureEncounter(world, completed, next, player);
+            if (horizontalDistanceSquared(next.center(), to) <= next.radius() * next.radius()) startAdventureEncounter(world, completed, next, player);
             return false;
         }
         if (adventureBossStarted.contains(instance)) return false;
@@ -665,10 +714,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         adventureWave.put(instance, 1);
         // Reunir a TODOS los companeros activos en el encuentro al activarse.
         // Esto evita que alguien quede al otro lado de la barrera de 15 bloques.
-        if (getConfig().getBoolean("adventure.encounter.teleport-party-on-start", true)) {
+        if (teamSizes.getOrDefault(instance, 1) > 1
+                && getConfig().getBoolean(adventureConfig(instance, "encounter.teleport-party-on-start"), true)) {
             for (Player teammate : fighters(world)) {
+                if (teammate.getUniqueId().equals(trigger.getUniqueId())) continue;
                 if (!instance.equals(playingWorld.get(teammate.getUniqueId()))) continue;
-                if (horizontalDistanceSquared(zone.center(), teammate.getLocation()) <= 9.0) continue;
+                // No mover a quien ya haya entrado por su cuenta en el radio.
+                if (horizontalDistanceSquared(zone.center(), teammate.getLocation()) <= zone.radius() * zone.radius()) continue;
                 // Preferir el lugar del activador para que todos aparezcan juntos.
                 Location safe = nearbySafeLocation(world, trigger.getLocation(), 0, 2);
                 if (safe == null || horizontalDistanceSquared(zone.center(), safe) > 14 * 14)
@@ -697,27 +749,87 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
+    private String labyrinthMobType(String instance) {
+        double moonChance = Math.min(100.0, Math.max(0.0, getConfig().getDouble("labyrinth.mobs.moon.spawn-chance-percent", 1.0)));
+        if (random.nextDouble() * 100.0 < moonChance) return "moon";
+        double giantWeight = Math.max(0.0, getConfig().getDouble("labyrinth.mobs.giant.weight", 1.0));
+        double mutantWeight = Math.max(0.0, getConfig().getDouble("labyrinth.mobs.mutant.weight", 3.0));
+        return random.nextDouble() * Math.max(0.0001, giantWeight + mutantWeight) < giantWeight ? "giant" : "mutant";
+    }
+
+    private String labyrinthMobPath(String mobId) {
+        for (String kind : List.of("mutant", "giant", "moon", "king"))
+            if (mobId.equalsIgnoreCase(getConfig().getString("labyrinth.mobs." + kind + ".mythic-id", "BastionSlime" + kind)))
+                return "labyrinth.mobs." + kind;
+        return null;
+    }
+
+    private double labyrinthDifficultyFactor(String instance) {
+        return switch (worldDifficulties.getOrDefault(instance, Difficulty.NORMAL)) {
+            case EASY -> 0.5;
+            case NORMAL -> 1.0;
+            case HARD -> 2.0;
+        };
+    }
+
+    private void configureLabyrinthMob(LivingEntity mob, String mobId) {
+        String path = labyrinthMobPath(mobId);
+        if (path == null) return;
+        setEnemyHealth(mob, getConfig().getDouble(path + ".health", 50));
+        var scale = mob.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+        if (scale != null) {
+            double newScale = getConfig().getDouble(path + ".scale", 1.0);
+            if (getConfig().contains(path + ".height-blocks")) {
+                // Ajustar hitbox real a la altura pedida, sobre el tamaño actual de MythicMobs.
+                double actualHeight = Math.max(0.05, mob.getBoundingBox().getHeight());
+                double desired = Math.max(0.2, getConfig().getDouble(path + ".height-blocks", actualHeight));
+                newScale = scale.getBaseValue() * desired / actualHeight;
+            }
+            scale.setBaseValue(Math.max(0.1, Math.min(16.0, newScale)));
+        }
+        var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
+        if (speed != null) {
+            // Velocidad indicada en config es un multiplicador, no bloques/segundo.
+            double mult = Math.max(0.0, getConfig().getDouble(path + ".speed-multiplier", 1.0));
+            speed.setBaseValue(Math.max(0.001, Math.min(1.0, speed.getBaseValue() * mult)));
+        }
+    }
+
     private boolean spawnAdventureWave(World world, Encounter zone, int wave) {
         String instance = world.getName();
-        int perPlayer = Math.max(1, getConfig().getInt("adventure.encounter.mobs-per-player",
-                getConfig().getInt("adventure.mobs-per-player", 4)));
-        int count = Math.min(64, perPlayer * Math.max(1, teamSizes.getOrDefault(instance, fighters(world).size())));
+        boolean labyrinth = isLabyrinth(instance);
+        int count;
+        String[] types;
+        if (labyrinth) {
+            List<Integer> counts = getConfig().getIntegerList("labyrinth.encounter.wave-counts");
+            count = counts.isEmpty() ? 5 * wave : counts.get(Math.min(wave - 1, counts.size() - 1));
+            count = Math.max(1, Math.min(128, count));
+            types = new String[0];
+        } else {
+            int perPlayer = Math.max(1, getConfig().getInt("adventure.encounter.mobs-per-player",
+                    getConfig().getInt("adventure.mobs-per-player", 4)));
+            count = Math.min(64, perPlayer * Math.max(1, teamSizes.getOrDefault(instance, fighters(world).size())));
+            types = getConfig().getStringList("adventure.mob-ids").toArray(new String[0]);
+            if (types.length == 0) types = new String[]{"SkeletalMinion", "SkeletalKnight"};
+        }
         Set<UUID> active = enemies.computeIfAbsent(instance, k -> new HashSet<>());
-        String[] types = getConfig().getStringList("adventure.mob-ids").toArray(new String[0]);
-        if (types.length == 0) types = new String[]{"SkeletalMinion", "SkeletalKnight"};
         int spawned = 0;
         for (int attempt = 0; attempt < count * 14 && spawned < count; attempt++) {
             Location pos = nearbySafeLocation(world, zone.center(), 2, Math.max(3, Math.min(8, (int) zone.radius())));
             if (pos == null) continue;
-            String mobId = types[random.nextInt(types.length)];
+            String mobId = labyrinth ? getConfig().getString("labyrinth.mobs." + labyrinthMobType(instance) + ".mythic-id")
+                    : types[random.nextInt(types.length)];
+            if (mobId == null || mobId.isBlank()) continue;
             try {
                 LivingEntity mob = spawnMythic(mobId, pos);
-                setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
-                // Modificar la velocidad solo de los guerreros esqueletos de esta aventura.
-                if (mobId.equalsIgnoreCase("SkeletalKnight") || mobId.equalsIgnoreCase("SkeletalKingt")) {
-                    var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
-                    if (speed != null) speed.setBaseValue(Math.max(0.05, Math.min(0.7,
-                            getConfig().getDouble("adventure.encounter.skeletal-knight-speed", 0.32))));
+                if (labyrinth) configureLabyrinthMob(mob, mobId);
+                else {
+                    setEnemyHealth(mob, mobId.equals("SkeletalMinion") ? 50 : 125);
+                    if (mobId.equalsIgnoreCase("SkeletalKnight") || mobId.equalsIgnoreCase("SkeletalKingt")) {
+                        var speed = mob.getAttribute(org.bukkit.attribute.Attribute.MOVEMENT_SPEED);
+                        if (speed != null) speed.setBaseValue(Math.max(0.05, Math.min(0.7,
+                                getConfig().getDouble("adventure.encounter.skeletal-knight-speed", 0.32))));
+                    }
                 }
                 active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
@@ -727,12 +839,20 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 break;
             }
         }
+        if (spawned != count) {
+            for (UUID id : new HashSet<>(active)) {
+                Entity entity = Bukkit.getEntity(id);
+                if (entity != null) entity.remove();
+                active.remove(id); protectedMobs.remove(id); enemyTypes.remove(id);
+            }
+            return false;
+        }
         if (spawned > 0) for (Player player : fighters(world))
             msg(player, messageText("adventure-encounter-wave", "&c¡Emboscada! &fOleada {wave}/{total}: &c{count} &fenemigos.")
                     .replace("{wave}", "" + wave)
-                    .replace("{total}", "" + Math.max(1, getConfig().getInt("adventure.encounter.waves", 2)))
+                    .replace("{total}", "" + totalEncounterWaves(instance, adventureActiveZone.getOrDefault(instance, 0)))
                     .replace("{count}", "" + spawned));
-        return spawned > 0;
+        return spawned == count;
     }
 
     private void completeAdventureEncounter(World world) {
@@ -740,11 +860,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Integer current = adventureActiveZone.get(instance);
         if (current == null || adventureNextWavePending.contains(instance) || !enemies.getOrDefault(instance, Set.of()).isEmpty()) return;
         int wave = adventureWave.getOrDefault(instance, 1);
-        int totalWaves = Math.max(1, getConfig().getInt("adventure.encounter.waves", 2));
+        int totalWaves = totalEncounterWaves(instance, current);
         if (wave < totalWaves) {
             adventureWave.put(instance, wave + 1);
             adventureNextWavePending.add(instance);
-            int delay = Math.max(0, getConfig().getInt("adventure.encounter.next-wave-delay-seconds", 0));
+            int delay = Math.max(0, getConfig().getInt(adventureConfig(instance, "encounter.next-wave-delay-seconds"), 0));
             // Impedir activaciones dobles mientras llega la siguiente oleada.
             Bukkit.getScheduler().runTaskLater(this, () -> {
                 if (!instanceWorlds.contains(instance) || finishing.contains(instance)
@@ -755,7 +875,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 adventureNextWavePending.remove(instance);
                 if (!success) {
                     getLogger().warning("No se pudieron generar enemigos de la oleada " + (wave + 1) + " en " + instance);
-                    finishAdventureEncounter(world, current);
+                    // No desbloquear la zona si MythicMobs falla al generar una oleada.
+                    adventureWave.put(instance, wave);
+                    for (Player player : fighters(world)) msg(player, "&cNo se pudo crear la oleada. Revisa los IDs de MythicMobs y la consola.");
                 }
             }, 1L + delay * 20L);
             return;
@@ -790,10 +912,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Bukkit.getScheduler().runTaskLater(this, () -> {
             frozen.remove(playerId);
             if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) return;
-            String mobId = getConfig().getString("adventure.boss-id", "SkeletonKing");
+            boolean labyrinth = isLabyrinth(instance);
+            String mobId = labyrinth ? getConfig().getString("labyrinth.mobs.king.mythic-id", "BastionSlimeKing")
+                    : getConfig().getString("adventure.boss-id", "SkeletonKing");
             try {
                 LivingEntity boss = spawnEpicBoss(mobId, bossAt,
-                        Math.max(1, getConfig().getDouble("adventure.boss-health", 500.0)), trigger);
+                        Math.max(1, getConfig().getDouble(labyrinth ? "labyrinth.mobs.king.health" : "adventure.boss-health", 500.0)), trigger);
+                if (labyrinth) configureLabyrinthMob(boss, mobId);
                 bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(boss.getUniqueId());
                 enemyTypes.put(boss.getUniqueId(), mobId);
                 updateEnemyName(boss, mobId);
@@ -880,7 +1005,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             }
             return true;
         }
-        if (args[0].equalsIgnoreCase("mobs") || args[0].equalsIgnoreCase("boss")) return adventureCommand(p, args);
+        if (args[0].equalsIgnoreCase("reload")) {
+            if (!p.isOp()) { msg(p, "&cSolo OP puede recargar Dungeons."); return true; }
+            reloadConfig();
+            loadExtraConfigs();
+            msg(p, messageText("admin-reload", "&aConfiguraciones de BastionDungeons recargadas."));
+            return true;
+        }
+        if (args[0].equalsIgnoreCase("mobs") || args[0].equalsIgnoreCase("radio") || args[0].equalsIgnoreCase("boss")) return adventureCommand(p, args);
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
             if (!p.isOp()) { msg(p, "Solo administradores OP."); return true; }
@@ -1666,7 +1798,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     + gradientBold("ESQUELETO", new String[]{"#F6BE80", "#F7C27D", "#F7C77B", "#F8CB78", "#F8CF75", "#F8CB78", "#F7C77B", "#F7C27D", "#F6BE80"});
             case "SkeletonKing" -> ChatColor.DARK_GRAY + "👑 " + ChatColor.WHITE + "Rey " + ChatColor.DARK_GRAY + "· "
                     + hex("#FF0000") + ChatColor.BOLD + "ESQUELETO";
-            default -> "";
+            default -> {
+                String path = labyrinthMobPath(mobType);
+                yield path == null ? "" : format(getConfig().getString(path + ".display-name", "&a" + mobType));
+            }
         };
         if (name.isEmpty()) return;
         var maxHealth = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
@@ -1684,7 +1819,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String world = mob.getWorld().getName();
         if (!instanceWorlds.contains(world)) return;
         UUID id = mob.getUniqueId();
-        String type = bosses.getOrDefault(world, Set.of()).contains(id) ? "SkeletonKing" :
+        String type = bosses.getOrDefault(world, Set.of()).contains(id) ? enemyTypes.getOrDefault(id, "SkeletonKing") :
                 enemies.getOrDefault(world, Collections.emptySet()).contains(id) ?
                 (enemyTypes.getOrDefault(id, "SkeletalMinion")) : null;
         if (type == null) return;
@@ -1818,7 +1953,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!(event.getEntity() instanceof Player victim)) return;
         if (!(event.getDamager() instanceof LivingEntity boss)) return;
         if (!bosses.getOrDefault(boss.getWorld().getName(), Set.of()).contains(boss.getUniqueId())) return;
-        if (kingLanding.contains(boss.getUniqueId())) return;
+        if (kingLanding.contains(boss.getUniqueId()) || isLabyrinth(boss.getWorld().getName())) return;
         if (!getConfig().getBoolean("boss-effects.launch.enabled", true)) return;
         long now = System.currentTimeMillis();
         long last = kingLastLaunch.getOrDefault(boss.getUniqueId(), 0L);
@@ -1834,6 +1969,19 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             victim.setVelocity(away);
             victim.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, victim.getLocation(), 14, .3, .6, .3, .05);
         });
+    }
+
+    @EventHandler(priority = EventPriority.NORMAL, ignoreCancelled = true)
+    public void onLabyrinthSlimeHit(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player) || !(event.getDamager() instanceof LivingEntity attacker)) return;
+        String world = attacker.getWorld().getName();
+        if (!isLabyrinth(world) || !instanceWorlds.contains(world)) return;
+        String type = enemyTypes.get(attacker.getUniqueId());
+        String path = type == null ? null : labyrinthMobPath(type);
+        if (path == null) return;
+        // Solo golpe cuerpo a cuerpo; habilidades MythicMobs pueden tener daños propios.
+        double normalDamage = getConfig().getDouble(path + ".damage", 10.0);
+        event.setDamage(Math.max(0, normalDamage * labyrinthDifficultyFactor(world)));
     }
 
     // Las instancias son de solo lectura: proteger la estructura y a los compañeros.
@@ -2313,12 +2461,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     List<Encounter> zones = adventureZones(name);
                     if (zoneIndex >= 0 && zoneIndex < zones.size()) {
                         Location center = zones.get(zoneIndex).center();
-                        double limit = Math.max(2.0, getConfig().getDouble("adventure.encounter-boundary-blocks", 15));
+                        double limit = Math.max(2.0, getConfig().getDouble(adventureConfig(name, "encounter-boundary-blocks"), 15));
                         if (horizontalDistanceSquared(center, mob.getLocation()) > limit * limit) {
                             long now = System.currentTimeMillis();
                             long first = adventureOutsideSince.computeIfAbsent(mobId, k -> now);
                             long wait = Math.min(2500L, Math.max(0L,
-                                    getConfig().getLong("adventure.encounter.mob-return-delay-ticks", 20L) * 50L));
+                                    getConfig().getLong(adventureConfig(name, "encounter.mob-return-delay-ticks"), 20L) * 50L));
                             if (now - first >= wait) {
                                 Location safe = nearbySafeLocation(world, center, 0, 4);
                                 if (safe == null && isSafe(world, center.getBlockX(), center.getBlockY(), center.getBlockZ()))
@@ -2342,7 +2490,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             for (UUID bossId : new HashSet<>(bosses.getOrDefault(name, Set.of()))) {
                 Entity entity = Bukkit.getEntity(bossId);
                 if (entity instanceof LivingEntity boss && !boss.isDead()) {
-                    updateEnemyName(boss, "SkeletonKing");
+                    updateEnemyName(boss, enemyTypes.getOrDefault(bossId, "SkeletonKing"));
                     pursueEnemy(boss, bossId, players, world);
                 }
             }
@@ -2384,7 +2532,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
         String deadType = enemyTypes.get(dead);
-        if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = "SkeletonKing";
+        if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = isLabyrinth(name)
+                ? getConfig().getString("labyrinth.mobs.king.mythic-id", "BastionSlimeKing") : "SkeletonKing";
         if (deadType != null) {
             if (getConfig().getBoolean("mob-drops.custom-loot-only", true)) {
                 event.getDrops().clear();
