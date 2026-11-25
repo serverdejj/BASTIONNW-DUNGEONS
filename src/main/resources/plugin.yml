@@ -1,11 +1,11 @@
 name: BastionDungeons
-version: 1.2.34-hologram-smooth-nametag
+version: 1.2.37-netherybreis-dragon
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
 description: Partidas privadas y mazmorras schematic (prototipo)
 depend: [WorldEdit]
-softdepend: [MythicMobs, LibsDisguises]
+softdepend: [MythicMobs, LibsDisguises, ModelEngine]
 commands:
   dungeon:
     description: Comandos de party y mazmorra

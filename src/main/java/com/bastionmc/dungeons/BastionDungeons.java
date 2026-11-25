@@ -109,6 +109,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<UUID, List<TextDisplay>> mobHolograms = new HashMap<>();
     private final Set<UUID> slimeBossJumping = new HashSet<>();
     private final Map<UUID, org.bukkit.scheduler.BukkitTask> slimeBossTasks = new HashMap<>();
+    // Dragon de Netherybreis: rutas y tareas por instancia, nunca globales.
+    private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonTasks = new HashMap<>();
+    private final Map<String, org.bukkit.scheduler.BukkitTask> netherCountdownTasks = new HashMap<>();
 
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
@@ -264,6 +267,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         for (UUID id : new HashSet<>(mobHolograms.keySet())) removeMobHologram(id);
         for (org.bukkit.scheduler.BukkitTask task : slimeBossTasks.values()) task.cancel();
         slimeBossTasks.clear(); slimeBossJumping.clear();
+        netherDragonTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
+        netherCountdownTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
+        netherDragonTasks.clear(); netherCountdownTasks.clear();
         kingLanding.clear(); kingLastLaunch.clear(); saveSchedule();
     }
 
@@ -272,7 +278,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         List<String> options = new ArrayList<>();
         if (args.length == 1) {
             options.addAll(List.of("party", "go", "leave"));
-            if (player.isOp()) options.addAll(List.of("map", "loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "radio", "boss", "reload"));
+            if (player.isOp()) options.addAll(List.of("map", "loot", "setspawn", "setmobspawn", "clearmobspawns", "romper", "libre", "mobs", "radio", "boss", "dragon", "reload"));
         } else if (args.length == 2 && args[0].equalsIgnoreCase("party")) options.addAll(List.of("add", "accept", "leave", "list"));
         else if (args.length == 3 && args[0].equalsIgnoreCase("party") && args[1].equalsIgnoreCase("add"))
             options.addAll(Bukkit.getOnlinePlayers().stream().map(Player::getName).toList());
@@ -294,11 +300,17 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("radio")) options.addAll(List.of("0", "1", "2", "3"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("mobs")) options.addAll(List.of("radio", "list", "clear"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("mobs") && args[1].equalsIgnoreCase("radio")) options.addAll(List.of("5", "10", "15", "20"));
+        else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("dragon")) options.addAll(List.of("spawn", "punto", "test", "info"));
+        else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("dragon") && args[1].equalsIgnoreCase("punto")) options.addAll(List.of("add", "list", "remove", "clear"));
+        else if (player.isOp() && args.length == 4 && args[0].equalsIgnoreCase("dragon") && args[1].equalsIgnoreCase("punto") && args[2].equalsIgnoreCase("remove")) options.addAll(List.of("1", "2", "3", "4", "5"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("boss")) options.addAll(List.of("bloque", "spawn", "list", "clear"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("boss") && args[1].equalsIgnoreCase("clear")) options.addAll(List.of("bloques", "spawn"));
         else if (player.isOp() && args.length == 2 && args[0].equalsIgnoreCase("loot")) options.addAll(List.of("add", "list", "remove"));
         else if (player.isOp() && args.length == 3 && args[0].equalsIgnoreCase("loot")) {
             options.addAll(List.of("SkeletalMinion", "SkeletalKnight", "SkeletonKing"));
+            options.add(getConfig().getString("netherybreis.piglins.melee.mythic-id", "BastionNetherPiglin"));
+            options.add(getConfig().getString("netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow"));
+            options.add(getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon"));
             for (String kind : List.of("mutant", "giant", "moon", "king"))
                 options.add(getConfig().getString("labyrinth.mobs." + kind + ".mythic-id", "BastionSlime" + kind));
         }
@@ -501,7 +513,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return (getConfig().getBoolean("adventure.enabled", true)
                     && id.equalsIgnoreCase(getConfig().getString("adventure.map", "dungeon1-endlessxl")))
                 || (getConfig().getBoolean("labyrinth.enabled", true)
-                    && id.replace('_', '-').equalsIgnoreCase(getConfig().getString("labyrinth.map", "the-labyrinth").replace('_', '-')));
+                    && id.replace('_', '-').equalsIgnoreCase(getConfig().getString("labyrinth.map", "the-labyrinth").replace('_', '-')))
+                || (getConfig().getBoolean("netherybreis.enabled", true)
+                    && id.replace('_', '-').equalsIgnoreCase(getConfig().getString("netherybreis.map", "netherybreis").replace('_', '-')));
     }
 
     private boolean isLabyrinth(String instance) {
@@ -512,8 +526,15 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 && id.equalsIgnoreCase(getConfig().getString("labyrinth.map", "the-labyrinth").replace('_', '-'));
     }
 
+    private boolean isNetherAdventure(String instance) {
+        String schematic = schematicNames.get(instance);
+        return schematic != null && getConfig().getBoolean("netherybreis.enabled", true)
+                && schematic.replaceFirst("(?i)\\.schem$", "").replace('_', '-').equalsIgnoreCase(
+                    getConfig().getString("netherybreis.map", "netherybreis").replace('_', '-'));
+    }
+
     private String adventureConfig(String instance, String suffix) {
-        return (isLabyrinth(instance) ? "labyrinth" : "adventure") + "." + suffix;
+        return (isNetherAdventure(instance) ? "netherybreis" : isLabyrinth(instance) ? "labyrinth" : "adventure") + "." + suffix;
     }
 
     private String adventurePath(String instance) {
@@ -553,7 +574,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     private int totalEncounterWaves(String instance, int zoneIndex) {
-        if (!isLabyrinth(instance)) return Math.max(1, getConfig().getInt("adventure.encounter.waves", 2));
+        if (!isLabyrinth(instance) && !isNetherAdventure(instance)) return Math.max(1, getConfig().getInt("adventure.encounter.waves", 2));
         String base = adventurePath(instance);
         var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
         List<String> zones = cfg.getStringList(base + ".zones");
@@ -562,7 +583,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             if (parts.length == 3) try { return Math.max(1, Math.min(10, Integer.parseInt(parts[2]) + 1)); }
             catch (NumberFormatException ignored) {}
         }
-        return Math.max(1, getConfig().getInt("labyrinth.encounter.default-extra-waves", 2) + 1);
+        return Math.max(1, getConfig().getInt(adventureConfig(instance, "encounter.default-extra-waves"), isNetherAdventure(instance) ? 3 : 2) + 1);
     }
 
     private Location adventureBossLocation(String instance) {
@@ -576,7 +597,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!player.isOp()) { msg(player, messageText("adventure-admin-denied", "&cSolo los administradores OP pueden configurar la aventura.")); return true; }
         String instance = playingWorld.get(player.getUniqueId());
         if (instance == null || !instance.equals(player.getWorld().getName()) || !isAdventure(instance)) {
-            msg(player, messageText("adventure-wrong-map", "&cDebes estar dentro de una partida de aventura (EndlessXL o The Labyrinth).")); return true;
+            msg(player, messageText("adventure-wrong-map", "&cDebes estar dentro de EndlessXL, The Labyrinth o Netherybreis.")); return true;
         }
         String base = adventurePath(instance);
         var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
@@ -589,7 +610,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 try { radius = Double.parseDouble(args[shortSyntax ? 1 : 2]); }
                 catch (NumberFormatException ex) { msg(player, "&cRadio invalido. Ejemplo: /dungeon radio 15 oleadas 2"); return true; }
                 if (!Double.isFinite(radius) || radius < 1 || radius > 100) { msg(player, "&cRadio permitido: 1 a 100 bloques."); return true; }
-                int extra = isLabyrinth(instance) ? Math.max(0, getConfig().getInt("labyrinth.encounter.default-extra-waves", 2)) : -1;
+                int extra = (isLabyrinth(instance) || isNetherAdventure(instance))
+                        ? Math.max(0, getConfig().getInt(adventureConfig(instance, "encounter.default-extra-waves"), isNetherAdventure(instance) ? 3 : 2)) : -1;
                 if (shortSyntax) {
                     try { extra = Integer.parseInt(args[3]); } catch (NumberFormatException ex) { msg(player, "&cNumero de oleadas invalido."); return true; }
                     if (extra < 0 || extra > 9) { msg(player, "&cLas oleadas adicionales deben estar entre 0 y 9."); return true; }
@@ -658,6 +680,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             return false;
         }
         if (adventureBossStarted.contains(instance)) return false;
+        // Nether: el jefe aparece automaticamente al completar la ultima zona.
+        // No se necesita pisar ningun bloque activador.
+        if (isNetherAdventure(instance)) return false;
         String base = adventurePath(instance);
         var data = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
         for (String marked : data.getStringList(base + ".boss.blocks")) {
@@ -848,10 +873,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private boolean spawnAdventureWave(World world, Encounter zone, int wave) {
         String instance = world.getName();
         boolean labyrinth = isLabyrinth(instance);
+        boolean nether = isNetherAdventure(instance);
         int count;
         String[] types;
-        if (labyrinth) {
-            List<Integer> counts = getConfig().getIntegerList("labyrinth.encounter.wave-counts");
+        if (labyrinth || nether) {
+            List<Integer> counts = getConfig().getIntegerList(nether ? "netherybreis.encounter.wave-counts" : "labyrinth.encounter.wave-counts");
             count = counts.isEmpty() ? 5 * wave : counts.get(Math.min(wave - 1, counts.size() - 1));
             count = Math.max(1, Math.min(128, count));
             types = new String[0];
@@ -867,12 +893,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         for (int attempt = 0; attempt < count * 14 && spawned < count; attempt++) {
             Location pos = nearbySafeLocation(world, zone.center(), 2, Math.max(3, Math.min(8, (int) zone.radius())));
             if (pos == null) continue;
-            String mobId = labyrinth ? getConfig().getString("labyrinth.mobs." + labyrinthMobType(instance) + ".mythic-id")
+            String mobId = nether ? netherPiglinId() : labyrinth
+                    ? getConfig().getString("labyrinth.mobs." + labyrinthMobType(instance) + ".mythic-id")
                     : types[random.nextInt(types.length)];
             if (mobId == null || mobId.isBlank()) continue;
             try {
                 LivingEntity mob = spawnMythic(mobId, pos);
-                if (labyrinth) configureLabyrinthMob(mob, mobId);
+                if (nether) configureNetherPiglin(mob, mobId);
+                else if (labyrinth) configureLabyrinthMob(mob, mobId);
                 else configureSkeletonMob(mob, mobId);
                 active.add(mob.getUniqueId()); enemyTypes.put(mob.getUniqueId(), mobId);
                 updateEnemyName(mob, mobId);
@@ -934,7 +962,244 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         adventureActiveZone.remove(instance); adventureWave.remove(instance); adventureNextWavePending.remove(instance);
         for (UUID id : enemies.getOrDefault(instance, Set.of())) adventureOutsideSince.remove(id);
         adventureCompletedZones.put(instance, index + 1);
+        if (isNetherAdventure(instance) && index + 1 >= adventureZones(instance).size()) {
+            // Solo despues de completar todas las zonas registradas.
+            Bukkit.getScheduler().runTaskLater(this, () -> startNetherDragonCountdown(world), 20L);
+        }
         for (Player player : fighters(world)) msg(player, messageText("adventure-unlocked", "&a¡Zona despejada! &fPuedes seguir avanzando."));
+    }
+
+    @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
+    public void onNetherPiglinProjectile(EntityDamageByEntityEvent event) {
+        if (!(event.getEntity() instanceof Player)) return;
+        if (!(event.getDamager() instanceof org.bukkit.entity.Projectile arrow)) return;
+        if (!(arrow.getShooter() instanceof LivingEntity shooter)) return;
+        String instance = shooter.getWorld().getName();
+        if (!isNetherAdventure(instance)) return;
+        String mobId = enemyTypes.get(shooter.getUniqueId());
+        if (mobId == null || !mobId.equalsIgnoreCase(getConfig().getString(
+                "netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow"))) return;
+        Difficulty diff = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+        event.setDamage(Math.max(0, getConfig().getDouble("netherybreis.piglins.crossbow.projectile-damage", 8.0)
+                * difficultyMultiplier(diff, "damage-multiplier", 1.0)));
+    }
+
+    // ===== NETHERYBREIS: piglins, countdown, Dragon Rojo y rutas persistentes =====
+    private String netherPiglinId() {
+        String kind = random.nextDouble() < Math.max(0, Math.min(1,
+                getConfig().getDouble("netherybreis.piglins.crossbow.probability", 0.35))) ? "crossbow" : "melee";
+        return getConfig().getString("netherybreis.piglins." + kind + ".mythic-id",
+                kind.equals("crossbow") ? "BastionNetherCrossbow" : "BastionNetherPiglin");
+    }
+
+    private String netherMobPath(String mobId) {
+        if (mobId.equalsIgnoreCase(getConfig().getString("netherybreis.piglins.melee.mythic-id", "BastionNetherPiglin"))) return "netherybreis.piglins.melee";
+        if (mobId.equalsIgnoreCase(getConfig().getString("netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow"))) return "netherybreis.piglins.crossbow";
+        if (mobId.equalsIgnoreCase(getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon"))) return "netherybreis.dragon";
+        return null;
+    }
+
+    private void configureNetherPiglin(LivingEntity mob, String id) {
+        String crossbow = getConfig().getString("netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow");
+        String path = "netherybreis.piglins." + (id.equalsIgnoreCase(crossbow) ? "crossbow" : "melee");
+        Difficulty difficulty = worldDifficulties.getOrDefault(mob.getWorld().getName(), Difficulty.NORMAL);
+        var health = mob.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+        double max = getConfig().getDouble(path + ".health", 90.0)
+                * difficultyMultiplier(difficulty, "health-multiplier", 1.0);
+        if (health != null) health.setBaseValue(Math.max(1, max));
+        mob.setHealth(Math.min(mob.getMaxHealth(), Math.max(1, max)));
+        var attack = mob.getAttribute(org.bukkit.attribute.Attribute.ATTACK_DAMAGE);
+        if (attack != null) attack.setBaseValue(getConfig().getDouble(path + ".damage", 9.0)
+                * difficultyMultiplier(difficulty, "damage-multiplier", 1.0));
+        var scale = mob.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+        if (scale != null) scale.setBaseValue(Math.max(0.1, Math.min(8, getConfig().getDouble(path + ".scale", 1.0))));
+    }
+
+    private boolean netherDragonCommand(Player p, String[] args) {
+        if (!p.isOp()) { msg(p, "&cSolo los OP pueden gestionar el dragón."); return true; }
+        String instance = playingWorld.get(p.getUniqueId());
+        if (instance == null || !instance.equals(p.getWorld().getName()) || !isNetherAdventure(instance)) {
+            msg(p, "&cEntra a una partida de Netherybreis para guardar puntos del dragón."); return true;
+        }
+        String base = adventurePath(instance);
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        String root = base + ".dragon";
+        if (args.length >= 2 && args[1].equalsIgnoreCase("spawn")) {
+            cfg.set(root + ".spawn", locationData(p.getLocation()));
+            msg(p, "&aPunto de aparición del Dragón Rojo guardado.");
+        } else if (args.length >= 3 && args[1].equalsIgnoreCase("punto")) {
+            String sub = args[2].toLowerCase(Locale.ROOT);
+            List<String> points = new ArrayList<>(cfg.getStringList(root + ".points"));
+            switch (sub) {
+                case "add" -> {
+                    if (points.size() >= 30) { msg(p, "&cMáximo 30 puntos de vuelo."); return true; }
+                    points.add(locationData(p.getLocation()));
+                    cfg.set(root + ".points", points);
+                    msg(p, "&aPunto de vuelo &f#" + points.size() + " &aguardado.");
+                }
+                case "list" -> { msg(p, "&bPuntos de vuelo: &f" + points.size() + " &7| Spawn: " + (cfg.contains(root + ".spawn") ? "&aSI" : "&cNO")); return true; }
+                case "clear" -> { cfg.set(root + ".points", null); msg(p, "&ePuntos de vuelo eliminados."); }
+                case "remove" -> {
+                    if (args.length < 4) { msg(p, "&e/dungeon dragon punto remove <numero>"); return true; }
+                    int n;
+                    try { n = Integer.parseInt(args[3]); } catch (NumberFormatException ex) { msg(p, "&cNúmero inválido."); return true; }
+                    if (n < 1 || n > points.size()) { msg(p, "&cEse punto no existe."); return true; }
+                    points.remove(n - 1); cfg.set(root + ".points", points);
+                    msg(p, "&aPunto eliminado.");
+                }
+                default -> { msg(p, "&e/dungeon dragon punto add|list|remove|clear"); return true; }
+            }
+        } else if (args.length == 2 && args[1].equalsIgnoreCase("info")) {
+            msg(p, "&bDragón: &f" + cfg.getStringList(root + ".points").size() + " puntos | Spawn: " +
+                    (cfg.contains(root + ".spawn") ? "&aSI" : "&cNO")); return true;
+        } else if (args.length == 2 && args[1].equalsIgnoreCase("test")) {
+            if (adventureBossStarted.contains(instance)) { msg(p, "&cEl jefe ya está activo."); return true; }
+            startNetherDragonCountdown(p.getWorld()); return true;
+        } else { msg(p, "&e/dungeon dragon spawn | punto add|list|remove <n>|clear | info | test"); return true; }
+        try { cfg.save(adventureFile); }
+        catch (IOException ex) { getLogger().log(java.util.logging.Level.WARNING, "No se pudo guardar ruta del dragón", ex); msg(p, "&cError al guardar los puntos."); }
+        return true;
+    }
+
+    private List<Location> netherDragonPoints(String instance) {
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        String root = adventurePath(instance) + ".dragon.points";
+        World world = Bukkit.getWorld(instance);
+        if (world == null) return List.of();
+        List<Location> points = new ArrayList<>();
+        for (String raw : cfg.getStringList(root)) {
+            Location l = parseLocation(world, raw);
+            if (l != null) points.add(l);
+        }
+        return points;
+    }
+
+    private Location netherDragonSpawn(String instance) {
+        World world = Bukkit.getWorld(instance);
+        if (world == null) return null;
+        var cfg = org.bukkit.configuration.file.YamlConfiguration.loadConfiguration(adventureFile);
+        return parseLocation(world, cfg.getString(adventurePath(instance) + ".dragon.spawn", ""));
+    }
+
+    private void startNetherDragonCountdown(World world) {
+        String instance = world.getName();
+        if (!isNetherAdventure(instance) || !instanceWorlds.contains(instance)
+                || adventureBossStarted.contains(instance) || finishing.contains(instance)) return;
+        if (adventureActiveZone.containsKey(instance) || !enemies.getOrDefault(instance, Set.of()).isEmpty()) return;
+        if (adventureCompletedZones.getOrDefault(instance, 0) < adventureZones(instance).size()
+                || adventureZones(instance).isEmpty()) return;
+        if (netherDragonSpawn(instance) == null) {
+            for (Player p : fighters(world)) msg(p, "&cFalta configurar /dungeon dragon spawn antes del jefe.");
+            return;
+        }
+        if (netherDragonPoints(instance).isEmpty()) {
+            for (Player p : fighters(world)) msg(p, "&cFaltan puntos de vuelo: /dungeon dragon punto add.");
+            return;
+        }
+        adventureBossStarted.add(instance);
+        int seconds = Math.max(1, getConfig().getInt("netherybreis.dragon.countdown-seconds", 10));
+        var timer = new org.bukkit.scheduler.BukkitRunnable() {
+            int left = seconds;
+            @Override public void run() {
+                if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) {
+                    netherCountdownTasks.remove(instance); adventureBossStarted.remove(instance); cancel(); return;
+                }
+                for (Player player : fighters(world)) player.sendTitle(
+                    format(getConfig().getString("netherybreis.dragon.title", "&#FF3333&lJEFE DRAGÓN")),
+                    format(getConfig().getString("netherybreis.dragon.subtitle", "&fAparecerá en &c{seconds}s")
+                        .replace("{seconds}", String.valueOf(left))), 0, 25, 0);
+                if (left-- <= 0) {
+                    cancel(); netherCountdownTasks.remove(instance);
+                    spawnNetherDragon(world);
+                }
+            }
+        }.runTaskTimer(this, 0L, 20L);
+        netherCountdownTasks.put(instance, timer);
+    }
+
+    private void spawnNetherDragon(World world) {
+        String instance = world.getName();
+        if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) return;
+        Location at = netherDragonSpawn(instance);
+        if (at == null) { adventureBossStarted.remove(instance); return; }
+        String id = getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon");
+        try {
+            LivingEntity dragon = spawnMythic(id, at);
+            Difficulty difficulty = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+            var health = dragon.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
+            double max = Math.max(1, getConfig().getDouble("netherybreis.dragon.health", 3500)
+                    * difficultyMultiplier(difficulty, "health-multiplier", 1));
+            if (health != null) health.setBaseValue(max);
+            dragon.setHealth(Math.min(dragon.getMaxHealth(), max));
+            var scale = dragon.getAttribute(org.bukkit.attribute.Attribute.SCALE);
+            if (scale != null) scale.setBaseValue(Math.max(0.1, Math.min(8, getConfig().getDouble("netherybreis.dragon.scale", 0.5))));
+            if (dragon instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
+            if (dragon instanceof org.bukkit.entity.EnderDragon vanilla) vanilla.setPhase(org.bukkit.entity.EnderDragon.Phase.HOVER);
+            dragon.setRemoveWhenFarAway(false);
+            bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(dragon.getUniqueId());
+            enemyTypes.put(dragon.getUniqueId(), id);
+            updateEnemyName(dragon, id);
+            for (Player player : fighters(world)) {
+                player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1f, 0.7f);
+                msg(player, getConfig().getString("netherybreis.dragon.spawn-message", "&#FF5555&l¡El Dragón Rojo ha aparecido!"));
+            }
+            startNetherDragonRoute(instance, dragon);
+        } catch (Exception ex) {
+            adventureBossStarted.remove(instance);
+            getLogger().log(java.util.logging.Level.SEVERE, "No se pudo crear BastionRedDragon en " + instance, ex);
+            for (Player p : fighters(world)) msg(p, "&cNo se pudo generar el dragón: revisa MythicMobs y el modelo.");
+        }
+    }
+
+    private void startNetherDragonRoute(String instance, LivingEntity boss) {
+        List<Location> points = netherDragonPoints(instance);
+        if (points.isEmpty()) return;
+        long flightTicks = Math.max(20, getConfig().getLong("netherybreis.dragon.flight.move-seconds", 10) * 20);
+        long stopTicks = Math.max(20, getConfig().getLong("netherybreis.dragon.flight.stop-seconds", 10) * 20);
+        var route = new org.bukkit.scheduler.BukkitRunnable() {
+            int point = 0;
+            long tick = 0;
+            Location source = boss.getLocation().clone();
+            @Override public void run() {
+                if (!instanceWorlds.contains(instance) || finishing.contains(instance) || boss.isDead() || !boss.isValid()) {
+                    netherDragonTasks.remove(instance); cancel(); return;
+                }
+                Location target = points.get(point);
+                if (tick < flightTicks) {
+                    double t = (double) tick / flightTicks;
+                    // Interpolacion suave para desplazamiento entre puntos sin romper el mapa.
+                    t = t * t * (3 - 2 * t);
+                    Location current = source.clone().add(target.toVector().subtract(source.toVector()).multiply(t));
+                    Vector v = target.toVector().subtract(current.toVector());
+                    if (v.lengthSquared() > 0.01) {
+                        current.setYaw((float) Math.toDegrees(Math.atan2(-v.getX(), v.getZ())));
+                    }
+                    boss.teleport(current);
+                    boss.setVelocity(new Vector(0, 0, 0));
+                } else if (tick == flightTicks) boss.teleport(target);
+                // Mientras descansa en un punto, lanza rafagas de aliento de dragon
+                // contra jugadores cercanos. Efecto sin destruccion de bloques.
+                if (tick >= flightTicks && (tick - flightTicks) % Math.max(1L,
+                        getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 2) * 20L) == 0L) {
+                    double radius = Math.max(1.0, getConfig().getDouble("netherybreis.dragon.attack.radius", 7.0));
+                    double damage = Math.max(0, getConfig().getDouble("netherybreis.dragon.attack.damage", 10.0));
+                    Difficulty diff = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+                    damage *= difficultyMultiplier(diff, "damage-multiplier", 1.0);
+                    boss.getWorld().spawnParticle(Particle.DRAGON_BREATH, boss.getLocation().clone().add(0, 1, 0),
+                            70, radius / 2, 1.2, radius / 2, 0.03);
+                    boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.7f, 1.1f);
+                    for (Player player : fighters(boss.getWorld()))
+                        if (player.getLocation().distanceSquared(boss.getLocation()) <= radius * radius)
+                            player.damage(damage, boss);
+                }
+                if (++tick >= flightTicks + stopTicks) {
+                    source = boss.getLocation().clone();
+                    point = (point + 1) % points.size();
+                    tick = 0;
+                }
+            }
+        }.runTaskTimer(this, 1L, 1L);
+        netherDragonTasks.put(instance, route);
     }
 
     private void startAdventureBoss(World world, Player trigger) {
@@ -1057,6 +1322,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             msg(p, messageText("admin-reload", "&aConfiguraciones de BastionDungeons recargadas."));
             return true;
         }
+        if (args[0].equalsIgnoreCase("dragon")) return netherDragonCommand(p, args);
         if (args[0].equalsIgnoreCase("mobs") || args[0].equalsIgnoreCase("radio") || args[0].equalsIgnoreCase("boss")) return adventureCommand(p, args);
         if (args[0].equalsIgnoreCase("loot")) return lootCommand(p, args);
         if (args[0].equalsIgnoreCase("setmobspawn") || args[0].equalsIgnoreCase("clearmobspawns")) {
@@ -1676,6 +1942,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 slimeBossTasks.remove(id).cancel(); slimeBossJumping.remove(id);
             }
         }
+        org.bukkit.scheduler.BukkitTask dragonTask = netherDragonTasks.remove(name);
+        if (dragonTask != null) dragonTask.cancel();
+        org.bukkit.scheduler.BukkitTask countdownTask = netherCountdownTasks.remove(name);
+        if (countdownTask != null) countdownTask.cancel();
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
         if (tracker != null) tracker.cancel();
         for (UUID mob : enemies.getOrDefault(name, Set.of())) { protectedMobs.remove(mob); lostTicks.remove(mob); lastMobPositions.remove(mob); }
@@ -1855,10 +2125,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     + hex("#FF0000") + ChatColor.BOLD + "ESQUELETO";
             default -> {
                 String path = labyrinthMobPath(mobType);
+                if (path == null) path = netherMobPath(mobType);
                 yield path == null ? "" : format(getConfig().getString(path + ".display-name", "&a" + mobType));
             }
         };
         String mobPath = labyrinthMobPath(mobType);
+        if (mobPath == null) mobPath = netherMobPath(mobType);
         if (mobPath == null) mobPath = skeletonMobPath(mobType);
         if (mobPath != null && getConfig().contains(mobPath + ".name-format"))
             name = format(getConfig().getString(mobPath + ".name-format", "&f" + mobType));
@@ -1896,6 +2168,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     // Configuracion por mob: skeleton-mobs.minion.hologram / labyrinth.mobs.mutant.hologram
     private String hologramPath(String mobType) {
         String path = labyrinthMobPath(mobType);
+        if (path == null) path = netherMobPath(mobType);
         return path != null ? path + ".hologram" :
                 (skeletonMobPath(mobType) == null ? "mob-hologram" : skeletonMobPath(mobType) + ".hologram");
     }
@@ -2737,7 +3010,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 Entity entity = Bukkit.getEntity(bossId);
                 if (entity instanceof LivingEntity boss && !boss.isDead()) {
                     updateEnemyName(boss, enemyTypes.getOrDefault(bossId, "SkeletonKing"));
-                    pursueEnemy(boss, bossId, players, world);
+                    if (!isNetherAdventure(name)) pursueEnemy(boss, bossId, players, world);
                 }
             }
             if (isAdventure(name)) {
@@ -2780,8 +3053,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
         String deadType = enemyTypes.get(dead);
-        if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = isLabyrinth(name)
-                ? getConfig().getString("labyrinth.mobs.king.mythic-id", "BastionSlimeKing") : "SkeletonKing";
+        if (deadType == null && bosses.getOrDefault(name, Set.of()).contains(dead)) deadType = isNetherAdventure(name)
+                ? getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon")
+                : isLabyrinth(name) ? getConfig().getString("labyrinth.mobs.king.mythic-id", "BastionSlimeKing") : "SkeletonKing";
         if (deadType != null) {
             if (getConfig().getBoolean("mob-drops.custom-loot-only", true)) {
                 event.getDrops().clear();
@@ -2793,6 +3067,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         org.bukkit.scheduler.BukkitTask bossTask = slimeBossTasks.remove(dead);
         if (bossTask != null) bossTask.cancel();
         slimeBossJumping.remove(dead);
+        if (isNetherAdventure(name) && bosses.getOrDefault(name, Set.of()).contains(dead)) {
+            org.bukkit.scheduler.BukkitTask task = netherDragonTasks.remove(name);
+            if (task != null) task.cancel();
+        }
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         kingLanding.remove(dead); kingLastLaunch.remove(dead);
         Set<UUID> active = enemies.get(name);

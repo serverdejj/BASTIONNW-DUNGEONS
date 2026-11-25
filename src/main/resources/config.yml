@@ -300,3 +300,53 @@ mob-hologram:
 # Habilidad exclusiva de BastionSlimeKing en The Labyrinth.
 # Tiempo inicial: 10 segundos tras aparecer. Luego: 5 segundos tras cada aterrizaje.
 # Explosion visual SIN destruccion de bloques, sin fuego y sin daño letal por defecto.
+
+# NETHERYBREIS: las zonas NO se crean automaticamente. Desde el mapa:
+# /dungeon radio 15 oleadas 3   -> 4 oleadas en esa zona
+# /dungeon dragon spawn         -> spawn final
+# /dungeon dragon punto add     -> agrega ruta de vuelo
+netherybreis:
+  enabled: true
+  map: netherybreis
+  encounter-boundary-blocks: 15
+  encounter:
+    teleport-party-on-start: true
+    default-extra-waves: 3
+    wave-counts: [5, 10, 15, 20]
+    next-wave-delay-seconds: 3
+    mob-return-delay-ticks: 20
+  piglins:
+    melee:
+      mythic-id: BastionNetherPiglin
+      display-name: '&#FFB25A&lPiglin Guerrero'
+      name-format: '&#FFB25A&lPiglin Guerrero'
+      health: 100.0
+      damage: 9.0
+      scale: 1.0
+    crossbow:
+      mythic-id: BastionNetherCrossbow
+      display-name: '&#FFC86A&lPiglin Ballestero'
+      name-format: '&#FFC86A&lPiglin Ballestero'
+      health: 85.0
+      damage: 8.0
+      scale: 1.0
+      probability: 0.35
+      projectile-damage: 8.0
+  dragon:
+    mythic-id: BastionRedDragon
+    display-name: '&#FF4545&lDRAGÓN ROJO'
+    name-format: '&#FF4545&lDRAGÓN ROJO'
+    health: 3500.0
+    damage: 30.0
+    scale: 0.5
+    countdown-seconds: 10
+    title: '&#FF3434&lJEFE DRAGÓN'
+    subtitle: '&fAparecerá en &c{seconds}s'
+    spawn-message: '&#FF3434&l¡El Dragón Rojo ha aparecido!'
+    flight:
+      move-seconds: 10
+      stop-seconds: 10
+    attack:
+      interval-seconds: 2
+      radius: 7.0
+      damage: 10.0

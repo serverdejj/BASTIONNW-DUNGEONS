@@ -1,0 +1,49 @@
+# Guardar como plugins/MythicMobs/mobs/BastionNether.yml
+# No instalar dos archivos que repitan estos IDs.
+BastionNetherPiglin:
+  Type: PIGLIN_BRUTE
+  Display: '&6Piglin Guerrero'
+  Health: 100
+  Damage: 9
+  Options:
+    PreventOtherDrops: true
+    PreventRandomEquipment: true
+    PreventSunburn: true
+  AITargetSelectors:
+    - 0 clear
+    - 1 players
+
+BastionNetherCrossbow:
+  Type: PIGLIN
+  Display: '&ePiglin Ballestero'
+  Health: 85
+  Damage: 8
+  Equipment:
+    - CROSSBOW HAND
+  Options:
+    PreventOtherDrops: true
+    PreventRandomEquipment: true
+    PreventSunburn: true
+  AIGoalSelectors:
+    - 0 clear
+    - 1 crossbowattack
+  AITargetSelectors:
+    - 0 clear
+    - 1 players
+
+# Modelo personalizado: requiere importar bastion_red_dragon.bbmodel en ModelEngine
+# y distribuir el resource pack generado. El mob usa ZOMBIE invisible tras colocar modelo.
+BastionRedDragon:
+  Type: ZOMBIE
+  Display: '&cDragón Rojo'
+  Health: 3500
+  Damage: 30
+  Options:
+    PreventOtherDrops: true
+    PreventSunburn: true
+    Silent: true
+    MovementSpeed: 0
+    PreventRandomEquipment: true
+  Skills:
+    - model{mid=bastion_red_dragon;drive=false} @self ~onSpawn
+    - state{s=fly;li=5;lo=5} @self ~onSpawn
