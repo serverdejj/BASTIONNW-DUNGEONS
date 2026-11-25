@@ -15,6 +15,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.event.*;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.entity.EntityDeathEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.EntityCombustEvent;
 import org.bukkit.event.entity.EntityDamageByEntityEvent;
 import org.bukkit.event.entity.EntityDamageEvent;
@@ -962,9 +963,21 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         adventureActiveZone.remove(instance); adventureWave.remove(instance); adventureNextWavePending.remove(instance);
         for (UUID id : enemies.getOrDefault(instance, Set.of())) adventureOutsideSince.remove(id);
         adventureCompletedZones.put(instance, index + 1);
-        if (isNetherAdventure(instance) && index + 1 >= adventureZones(instance).size()) {
-            // Solo despues de completar todas las zonas registradas.
-            Bukkit.getScheduler().runTaskLater(this, () -> startNetherDragonCountdown(world), 20L);
+        if (isNetherAdventure(instance)) {
+            // Netherybreis usa oleadas y jefe automático: nunca exige boss bloque.
+            // Por defecto se activa después de todas las zonas registradas,
+            // o después de una zona si se configura boss-after-any-zone: true.
+            boolean bossReady = getConfig().getBoolean("netherybreis.encounter.boss-after-any-zone", false)
+                    || index + 1 >= adventureZones(instance).size();
+            if (bossReady) {
+                for (Player p : fighters(world)) msg(p, getConfig().getString(
+                        "netherybreis.encounter.completed-message", "&#FF9555&l¡Oleadas completadas! &7Se aproxima el Dragón Rojo."));
+                Bukkit.getScheduler().runTaskLater(this, () -> startNetherDragonCountdown(world), 20L);
+            } else {
+                for (Player p : fighters(world)) msg(p, getConfig().getString(
+                        "netherybreis.encounter.zone-completed-message", "&a¡Oleadas de esta zona completadas!"));
+            }
+            return;
         }
         for (Player player : fighters(world)) msg(player, messageText("adventure-unlocked", "&a¡Zona despejada! &fPuedes seguir avanzando."));
     }
@@ -999,6 +1012,38 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return null;
     }
 
+    // Los Piglins de Dungeons no deben recoger oro, equipo ni regalos;
+    // y siempre fijan jugadores como objetivo incluso si llevan oro equipado.
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onNetherPiglinPickup(EntityPickupItemEvent event) {
+        if (!isDungeonNetherPiglin(event.getEntity())) return;
+        event.setCancelled(true);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = false)
+    public void onNetherPiglinBarter(PlayerInteractEntityEvent event) {
+        if (!isDungeonNetherPiglin(event.getRightClicked())) return;
+        event.setCancelled(true);
+    }
+
+    private boolean isDungeonNetherPiglin(Entity entity) {
+        if (entity == null || !isNetherAdventure(entity.getWorld().getName())) return false;
+        String id = enemyTypes.get(entity.getUniqueId());
+        return id != null && (id.equalsIgnoreCase(getConfig().getString(
+                "netherybreis.piglins.melee.mythic-id", "BastionNetherPiglin"))
+                || id.equalsIgnoreCase(getConfig().getString(
+                "netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow")));
+    }
+
+    private void forceNetherPiglinAggro(LivingEntity mob, List<Player> players) {
+        if (!(mob instanceof org.bukkit.entity.Mob ai) || players.isEmpty()) return;
+        if (!isDungeonNetherPiglin(mob)) return;
+        Player nearest = players.stream().filter(p -> !p.isDead())
+                .min(Comparator.comparingDouble(p -> p.getLocation().distanceSquared(mob.getLocation())))
+                .orElse(null);
+        if (nearest != null && ai.getTarget() != nearest) ai.setTarget(nearest);
+    }
+
     private void configureNetherPiglin(LivingEntity mob, String id) {
         String crossbow = getConfig().getString("netherybreis.piglins.crossbow.mythic-id", "BastionNetherCrossbow");
         String path = "netherybreis.piglins." + (id.equalsIgnoreCase(crossbow) ? "crossbow" : "melee");
@@ -1013,6 +1058,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 * difficultyMultiplier(difficulty, "damage-multiplier", 1.0));
         var scale = mob.getAttribute(org.bukkit.attribute.Attribute.SCALE);
         if (scale != null) scale.setBaseValue(Math.max(0.1, Math.min(8, getConfig().getDouble(path + ".scale", 1.0))));
+        mob.setCanPickupItems(false);
+        if (mob instanceof org.bukkit.entity.Mob ai) forceNetherPiglinAggro(mob, fighters(mob.getWorld()));
     }
 
     private boolean netherDragonCommand(Player p, String[] args) {
@@ -1086,16 +1133,16 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (!isNetherAdventure(instance) || !instanceWorlds.contains(instance)
                 || adventureBossStarted.contains(instance) || finishing.contains(instance)) return;
         if (adventureActiveZone.containsKey(instance) || !enemies.getOrDefault(instance, Set.of()).isEmpty()) return;
-        if (adventureCompletedZones.getOrDefault(instance, 0) < adventureZones(instance).size()
-                || adventureZones(instance).isEmpty()) return;
+        if (adventureZones(instance).isEmpty()) return;
+        if (!getConfig().getBoolean("netherybreis.encounter.boss-after-any-zone", false)
+                && adventureCompletedZones.getOrDefault(instance, 0) < adventureZones(instance).size()) return;
         if (netherDragonSpawn(instance) == null) {
             for (Player p : fighters(world)) msg(p, "&cFalta configurar /dungeon dragon spawn antes del jefe.");
             return;
         }
-        if (netherDragonPoints(instance).isEmpty()) {
-            for (Player p : fighters(world)) msg(p, "&cFaltan puntos de vuelo: /dungeon dragon punto add.");
-            return;
-        }
+        // Los puntos de vuelo son opcionales. Con solo /dungeon dragon spawn
+        // el jefe aparece y puede quedarse sobre el punto guardado.
+        // Los puntos agregados después controlan su ruta de vuelo.
         adventureBossStarted.add(instance);
         int seconds = Math.max(1, getConfig().getInt("netherybreis.dragon.countdown-seconds", 10));
         var timer = new org.bukkit.scheduler.BukkitRunnable() {
@@ -2151,9 +2198,11 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             // deseado ya se conserva en el holograma independiente y actualizable.
             // Se repite desde tickMobHolograms por si MythicMobs lo reasigna.
             mob.setCustomNameVisible(false);
-            if (skeletonMobPath(mobType) != null
-                    && getConfig().getBoolean("mob-hologram.hide-native-name", true)
-                    && getConfig().getBoolean(skeletonMobPath(mobType) + ".hologram.hide-native-name",
+            // El holograma independiente es el único nombre visible. También para
+            // Piglins de Netherybreis, no solo esqueletos de EndlessXL.
+            String nativePath = hologramPath(mobType);
+            if (getConfig().getBoolean("mob-hologram.hide-native-name", true)
+                    && getConfig().getBoolean(nativePath + ".hide-native-name",
                             getConfig().getBoolean("mob-hologram.hide-native-name", true))) {
                 if (mob.getCustomName() != null) mob.setCustomName(null);
             }
@@ -2973,6 +3022,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     continue;
                 }
                 if (elapsed % 2 == 0) updateEnemyName(mob, enemyTypes.getOrDefault(mobId, "SkeletalMinion"));
+                if (isNetherAdventure(name)) forceNetherPiglinAggro(mob, players);
                 // En EndlessXL, devolver al enemigo que abandono su zona activa
                 // antes de tres segundos, sin esperar al acecho general del plugin.
                 if (isAdventure(name) && adventureActiveZone.containsKey(name)) {

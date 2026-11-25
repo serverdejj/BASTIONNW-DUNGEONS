@@ -313,6 +313,9 @@ netherybreis:
     teleport-party-on-start: true
     default-extra-waves: 3
     wave-counts: [5, 10, 15, 20]
+    boss-after-any-zone: false # false: tras la ultima zona; true: tras completar una sola zona
+    completed-message: '&#FF9555&l¡Oleadas completadas! &7Se aproxima el Dragón Rojo.'
+    zone-completed-message: '&a¡Oleadas de esta zona completadas!' 
     next-wave-delay-seconds: 3
     mob-return-delay-ticks: 20
   piglins:
