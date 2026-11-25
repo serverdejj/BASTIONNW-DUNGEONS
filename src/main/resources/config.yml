@@ -264,6 +264,9 @@ boss-effects:
 # Formato legacy: &a, &l, &#RRGGBB y degradados escritos caracter por caracter.
 mob-hologram:
   enabled: true
+  # Oculta el nombre nativo de MythicMobs bajo el holograma en EndlessXL.
+  # El nombre personalizado con vida del TextDisplay permanece visible.
+  hide-native-name: true
   height: 0.50                 # bloques por encima de la altura REAL de cada mob
   line-spacing: 0.30
   scale: 1.0

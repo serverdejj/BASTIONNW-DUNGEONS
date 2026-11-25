@@ -1873,8 +1873,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 .replace("{health}", String.valueOf(hp))
                 .replace("{max_health}", String.valueOf(total)));
         if (getConfig().getBoolean("mob-hologram.enabled", true)) {
-            // El nombre nativo suele quedar oculto por LibsDisguises. Usamos TextDisplay.
+            // El nombre nativo de MythicMobs puede seguir apareciendo debajo del
+            // TextDisplay cuando el jugador apunta al enemigo, aunque visible=false.
+            // Para los esqueletos de EndlessXL, borrar tambien ese texto; el nombre
+            // deseado ya se conserva en el holograma independiente y actualizable.
+            // Se repite desde tickMobHolograms por si MythicMobs lo reasigna.
             mob.setCustomNameVisible(false);
+            if (skeletonMobPath(mobType) != null
+                    && getConfig().getBoolean("mob-hologram.hide-native-name", true)
+                    && getConfig().getBoolean(skeletonMobPath(mobType) + ".hologram.hide-native-name",
+                            getConfig().getBoolean("mob-hologram.hide-native-name", true))) {
+                if (mob.getCustomName() != null) mob.setCustomName(null);
+            }
             ensureMobHologram(mob, mobType, name, hp, total, rendered);
         } else {
             removeMobHologram(mob.getUniqueId());
