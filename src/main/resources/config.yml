@@ -367,6 +367,7 @@ netherybreis:
       move-seconds: 10
       stop-seconds: 10
       max-radius-blocks: 30.0 # Los puntos fuera de este radio se acercan al spawn
+      fly-height-blocks: 8.0 # Arco de vuelo; atraviesa construcciones sin destruirlas
       fallback-orbit-radius: 24.0 # Solo si no hay puntos configurados
     attack:
       enabled: true
