@@ -364,30 +364,36 @@ netherybreis:
       color: RED
       style: SOLID
     flight:
-      move-seconds: 10
+      min-height-above-spawn: 10.0
+      max-height-above-spawn: 15.0
+      cruise-height-above-spawn: 12.0
+      move-seconds: 4
       stop-seconds: 10
       max-radius-blocks: 30.0 # Los puntos fuera de este radio se acercan al spawn
-      fly-height-blocks: 8.0 # Arco de vuelo; atraviesa construcciones sin destruirlas
       fallback-orbit-radius: 24.0 # Solo si no hay puntos configurados
     attack:
       enabled: true
-      interval-seconds: 2 # Disparo mientras esta parado
-      flight-interval-seconds: 3 # Tambien dispara mientras vuela
+      interval-seconds: 6 # Disparo mientras esta parado
+      flight-interval-seconds: 6 # Tambien dispara mientras vuela
       range-blocks: 45.0 # Distancia horizontal de deteccion
       vertical-range-blocks: 55.0 # Alcanza a jugadores bajo el dragon
       splash-radius: 2.5
       damage: 10.0
       ignite: true
       fire-seconds: 3
+      knockback-horizontal: 0.20
+      knockback-vertical: 0.10
     fireballs:
       enabled: true
-      interval-seconds: 3 # Bolas reales de fuego tipo Ghast mientras vuela
+      interval-seconds: 8 # Bolas reales de fuego tipo Ghast mientras vuela
       range-blocks: 50.0
       vertical-range-blocks: 60.0
       speed: 1.0
       damage: 12.0
       splash-radius: 2.5
       fire-seconds: 3
+      knockback-horizontal: 0.20
+      knockback-vertical: 0.10
     death:
       enabled: true
       ascend-seconds: 4.0

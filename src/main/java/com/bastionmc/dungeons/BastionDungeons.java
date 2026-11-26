@@ -1362,6 +1362,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (target == null) return;
         final Location from = dragon.getLocation().clone().add(0, 1.5, 0);
         final Location to = target.getLocation().clone().add(0, 1.0, 0);
+        if (!dragonClearLine(from, to)) return;
         // Estela de fuego visible desde la cabeza del dragon hacia su victima.
         Vector line = to.toVector().subtract(from.toVector());
         double length = line.length();
@@ -1381,7 +1382,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         double splash = Math.max(0.0, getConfig().getDouble(cfg + ".splash-radius", 2.5));
         for (Player player : fighters(dragon.getWorld())) {
             if (!player.isDead() && player.getLocation().distanceSquared(target.getLocation()) <= splash * splash) {
-                if (damage > 0) player.damage(damage, dragon);
+                if (!dragonClearLine(from, player.getEyeLocation())) continue;
+                if (damage > 0) { player.damage(damage, dragon); dragonSoftKnockback(player, from, cfg); }
                 if (getConfig().getBoolean(cfg + ".ignite", true)) player.setFireTicks(Math.max(player.getFireTicks(),
                         Math.max(0, getConfig().getInt(cfg + ".fire-seconds", 3)) * 20));
             }
@@ -1415,7 +1417,14 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (horizontal.lengthSquared() > radius * radius) horizontal.normalize().multiply(radius);
         Location allowed = center.clone().add(horizontal.getX(), desired.getY() - center.getY(), horizontal.getZ());
         allowed.setYaw(desired.getYaw()); allowed.setPitch(0);
-        return netherDragonGround(allowed);
+        // V1.2.45: los waypoints son aéreos, a altura FIJA respecto al spawn.
+        // No buscar el suelo: el algoritmo anterior encontraba cuevas y llevaba al jefe bajo tierra.
+        double minHeight = getConfig().getDouble("netherybreis.dragon.flight.min-height-above-spawn", 10.0);
+        double maxHeight = getConfig().getDouble("netherybreis.dragon.flight.max-height-above-spawn", 15.0);
+        if (maxHeight < minHeight) maxHeight = minHeight;
+        double selectedHeight = getConfig().getDouble("netherybreis.dragon.flight.cruise-height-above-spawn", 12.0);
+        allowed.setY(center.getY() + Math.max(minHeight, Math.min(maxHeight, selectedHeight)));
+        return allowed;
     }
 
     // No usa navegación de mobs. Los teletransportes pasan por paredes y techos.
@@ -1442,6 +1451,31 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         return closest;
     }
 
+    // La trayectoria debe estar despejada: no atravesar paredes ni proyectar fuego a través de ellas.
+    private boolean dragonClearLine(Location start, Location end) {
+        if (start.getWorld() == null || !start.getWorld().equals(end.getWorld())) return false;
+        Vector delta = end.toVector().subtract(start.toVector());
+        double length = delta.length();
+        if (length < 0.01) return true;
+        org.bukkit.util.RayTraceResult hit = start.getWorld().rayTraceBlocks(
+                start, delta.normalize(), length,
+                org.bukkit.FluidCollisionMode.NEVER, true);
+        return hit == null;
+    }
+
+    private void dragonSoftKnockback(Player player, Location explosion, String configBase) {
+        double horiz = Math.max(0, Math.min(0.45, getConfig().getDouble(configBase + ".knockback-horizontal", 0.20)));
+        double vert = Math.max(0, Math.min(0.30, getConfig().getDouble(configBase + ".knockback-vertical", 0.10)));
+        Vector push = player.getLocation().toVector().subtract(explosion.toVector()).setY(0);
+        if (push.lengthSquared() > 0.001) push.normalize().multiply(horiz);
+        else push.zero();
+        push.setY(vert);
+        // El damage() de Bukkit puede aplicar su propio empuje: imponer el empuje suave al tick siguiente.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (player.isOnline() && !player.isDead()) player.setVelocity(push);
+        }, 1L);
+    }
+
     private void dragonGhastFireball(String instance, LivingEntity boss) {
         String base = "netherybreis.dragon.fireballs";
         if (!getConfig().getBoolean(base + ".enabled", true)) return;
@@ -1460,6 +1494,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             muzzle = boss.getLocation().clone().add(0, 2.0, 0);
             if (!muzzle.getBlock().isPassable()) return;
         }
+        if (!dragonClearLine(muzzle, aim)) return; // las bolas no deben atravesar paredes
         final Vector shot = aim.toVector().subtract(muzzle.toVector()).normalize();
         double speed = Math.max(0.3, Math.min(2.0, getConfig().getDouble(base + ".speed", 1.0)));
         org.bukkit.entity.LargeFireball ball = boss.getWorld().spawn(muzzle, org.bukkit.entity.LargeFireball.class, projectile -> {
@@ -1496,8 +1531,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Entity source = Bukkit.getEntity(ownerId);
         for (Player player : fighters(world)) {
             if (player.isDead() || player.getLocation().distanceSquared(at) > radius * radius) continue;
+            if (!dragonClearLine(at, player.getEyeLocation())) continue;
             if (source instanceof LivingEntity dragon) player.damage(damage, dragon);
             else player.damage(damage);
+            dragonSoftKnockback(player, at, configPath);
             player.setFireTicks(Math.max(player.getFireTicks(), 20 * Math.max(0, getConfig().getInt(configPath + ".fire-seconds", 3))));
         }
         // La explosion del proyectil tiene yield=0: nunca destruye la arena.
@@ -1524,12 +1561,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             getLogger().warning("Dragon " + instance + ": sin puntos guardados, patrulla automatica.");
         }
         final List<Location> targets = List.copyOf(stops);
-        final long moveTicks = Math.max(20, getConfig().getLong(base + ".move-seconds", 10) * 20);
+        final long moveTicks = Math.max(20, getConfig().getLong(base + ".move-seconds", 4) * 20);
         final long stopTicks = Math.max(20, getConfig().getLong(base + ".stop-seconds", 10) * 20);
-        final long flightAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.flight-interval-seconds", 3) * 20);
-        final long restAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 2) * 20);
-        final long fireballEvery = Math.max(1, getConfig().getLong("netherybreis.dragon.fireballs.interval-seconds", 3) * 20);
-        final double flyHeight = Math.max(2, Math.min(24, getConfig().getDouble(base + ".fly-height-blocks", 8.0)));
+        final long flightAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.flight-interval-seconds", 6) * 20);
+        final long restAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 6) * 20);
+        final long fireballEvery = Math.max(1, getConfig().getLong("netherybreis.dragon.fireballs.interval-seconds", 8) * 20);
+        final double minFlightY = spawnCenter.getY() + getConfig().getDouble(base + ".min-height-above-spawn", 10.0);
+        final double maxFlightY = spawnCenter.getY() + getConfig().getDouble(base + ".max-height-above-spawn", 15.0);
         if (boss instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
         boss.setGravity(false);
         boss.setCollidable(false);
@@ -1542,6 +1580,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             Location origin = boss.getLocation().clone();
             Location destination = targets.get(0);
             int failedMoves = 0;
+            long fireballClock = 0;
             @Override public void run() {
                 try {
                     if (!instanceWorlds.contains(instance) || finishing.contains(instance) || !boss.isValid() || boss.isDead()) {
@@ -1554,8 +1593,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         double t = Math.min(1.0, ticks / (double) moveTicks);
                         double smooth = t * t * (3.0 - 2.0 * t);
                         Location next = origin.clone().add(destination.toVector().subtract(origin.toVector()).multiply(smooth));
-                        // Arco vertical 0 en ambos extremos; +flyHeight a mitad del vuelo.
-                        next.add(0, flyHeight * Math.sin(Math.PI * t), 0);
+                        // Evitar descender al subsuelo o exceder el techo de vuelo configurado.
+                        next.setY(Math.max(minFlightY, Math.min(Math.max(minFlightY, maxFlightY), next.getY())));
                         Vector face = destination.toVector().subtract(boss.getLocation().toVector());
                         if (face.lengthSquared() > 0.001)
                             next.setYaw((float) Math.toDegrees(Math.atan2(-face.getX(), face.getZ())));
@@ -1587,7 +1626,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             destination = targets.get(targetIndex);
                         }
                     }
-                    if (ticks % fireballEvery == 0) {
+                    if (++fireballClock >= fireballEvery) {
+                        fireballClock = 0;
                         try { dragonGhastFireball(instance, boss); }
                         catch (Exception fireballError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo bola de fuego; patrulla continua", fireballError); }
                     }

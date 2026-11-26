@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.44-dragon-particle-fix
+version: 1.2.45-dragon-combat-flight
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
