@@ -117,6 +117,8 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, org.bukkit.boss.BossBar> netherDragonBars = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonBarTasks = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonEntranceTasks = new HashMap<>();
+    private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonDeathTasks = new HashMap<>();
+    private final Map<String, UUID> netherDragonDeathEntities = new HashMap<>();
 
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
@@ -275,6 +277,13 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         netherDragonTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherCountdownTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherDragonTasks.clear(); netherCountdownTasks.clear();
+        netherDragonDeathTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
+        netherDragonDeathTasks.clear();
+        for (UUID visual : netherDragonDeathEntities.values()) {
+            Entity entity = Bukkit.getEntity(visual);
+            if (entity != null) entity.remove();
+        }
+        netherDragonDeathEntities.clear();
         netherDragonEntranceTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherDragonBarTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherDragonBars.values().forEach(org.bukkit.boss.BossBar::removeAll);
@@ -1204,6 +1213,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             var scale = dragon.getAttribute(org.bukkit.attribute.Attribute.SCALE);
             if (scale != null) scale.setBaseValue(Math.max(0.1, Math.min(8, getConfig().getDouble("netherybreis.dragon.scale", 0.5))));
             if (dragon instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
+            // Un mob sin IA sigue cayendo por gravedad: impedir que el controlador de vuelo pelee con la fisica.
+            dragon.setGravity(false);
+            dragon.setFallDistance(0);
             if (dragon instanceof org.bukkit.entity.EnderDragon vanilla) vanilla.setPhase(org.bukkit.entity.EnderDragon.Phase.HOVER);
             dragon.setRemoveWhenFarAway(false);
             bosses.computeIfAbsent(instance, k -> new HashSet<>()).add(dragon.getUniqueId());
@@ -1326,11 +1338,74 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         // Explosión solo audiovisual: nunca modifica bloques, fuego ni terreno.
     }
 
+    // Ataque dirigido: alcance horizontal desde el dragon, pero permite jugadores en el suelo
+    // mientras el jefe vuela sobre ellos. No depende de la IA del zombie invisible.
+    private void dragonFireAttack(String instance, LivingEntity dragon, boolean resting) {
+        String cfg = "netherybreis.dragon.attack";
+        if (!getConfig().getBoolean(cfg + ".enabled", true)) return;
+        double range = Math.max(2.0, getConfig().getDouble(cfg + ".range-blocks", 45.0));
+        double vertical = Math.max(2.0, getConfig().getDouble(cfg + ".vertical-range-blocks", 55.0));
+        Player target = null;
+        double best = Double.MAX_VALUE;
+        for (Player player : fighters(dragon.getWorld())) {
+            if (player.isDead() || !player.isValid() || player.getGameMode() == GameMode.SPECTATOR) continue;
+            double horizontal = horizontalDistanceSquared(dragon.getLocation(), player.getLocation());
+            if (horizontal > range * range || Math.abs(dragon.getLocation().getY() - player.getLocation().getY()) > vertical) continue;
+            if (horizontal < best) { best = horizontal; target = player; }
+        }
+        if (target == null) return;
+        final Location from = dragon.getLocation().clone().add(0, 1.5, 0);
+        final Location to = target.getLocation().clone().add(0, 1.0, 0);
+        // Estela de fuego visible desde la cabeza del dragon hacia su victima.
+        Vector line = to.toVector().subtract(from.toVector());
+        double length = line.length();
+        if (length > 0.01) {
+            Vector step = line.clone().normalize().multiply(0.85);
+            Location particle = from.clone();
+            for (int i = 0, count = Math.min(90, (int) Math.ceil(length / 0.85)); i < count; i++) {
+                particle.add(step);
+                dragon.getWorld().spawnParticle(Particle.FLAME, particle, 3, 0.24, 0.24, 0.24, 0.02);
+                dragon.getWorld().spawnParticle(Particle.DRAGON_BREATH, particle, 2, 0.20, 0.20, 0.20, 0.015);
+            }
+        }
+        dragon.getWorld().playSound(from, Sound.ENTITY_BLAZE_SHOOT, 1.4f, resting ? 0.65f : 0.85f);
+        double damage = Math.max(0, getConfig().getDouble(cfg + ".damage", 10.0));
+        Difficulty diff = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+        damage *= difficultyMultiplier(diff, "damage-multiplier", 1.0);
+        double splash = Math.max(0.0, getConfig().getDouble(cfg + ".splash-radius", 2.5));
+        for (Player player : fighters(dragon.getWorld())) {
+            if (!player.isDead() && player.getLocation().distanceSquared(target.getLocation()) <= splash * splash) {
+                if (damage > 0) player.damage(damage, dragon);
+                if (getConfig().getBoolean(cfg + ".ignite", true)) player.setFireTicks(Math.max(player.getFireTicks(),
+                        Math.max(0, getConfig().getInt(cfg + ".fire-seconds", 3)) * 20));
+            }
+        }
+        dragon.getWorld().spawnParticle(Particle.FLAME, to, 36, 1.0, 0.8, 1.0, 0.05);
+    }
+
     private void startNetherDragonRoute(String instance, LivingEntity boss) {
+        org.bukkit.scheduler.BukkitTask previous = netherDragonTasks.remove(instance);
+        if (previous != null) previous.cancel();
         List<Location> points = netherDragonPoints(instance);
-        if (points.isEmpty()) return;
-        long flightTicks = Math.max(20, getConfig().getLong("netherybreis.dragon.flight.move-seconds", 10) * 20);
-        long stopTicks = Math.max(20, getConfig().getLong("netherybreis.dragon.flight.stop-seconds", 10) * 20);
+        if (points.isEmpty()) {
+            // Las rutas guardadas mandan. Solo si no hay ninguna se genera un circuito provisional.
+            Location center = netherDragonSpawn(instance);
+            if (center == null) center = boss.getLocation();
+            double radius = Math.max(6, getConfig().getDouble("netherybreis.dragon.flight.fallback-orbit-radius", 18));
+            points = new ArrayList<>();
+            for (int i = 0; i < 4; i++) {
+                double angle = i * Math.PI / 2;
+                points.add(center.clone().add(Math.cos(angle) * radius, 7.0, Math.sin(angle) * radius));
+            }
+            getLogger().warning("Dragon de " + instance + " sin puntos guardados: circuito automatico provisional. Configura /dungeon dragon punto add.");
+        }
+        final List<Location> routePoints = points;
+        final long flightTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.flight.move-seconds", 10) * 20);
+        final long stopTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.flight.stop-seconds", 10) * 20);
+        final long flightAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.flight-interval-seconds", 3) * 20);
+        final long restAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 2) * 20);
+        boss.setGravity(false);
+        if (boss instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
         var route = new org.bukkit.scheduler.BukkitRunnable() {
             int point = 0;
             long tick = 0;
@@ -1339,42 +1414,85 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 if (!instanceWorlds.contains(instance) || finishing.contains(instance) || boss.isDead() || !boss.isValid()) {
                     netherDragonTasks.remove(instance); cancel(); return;
                 }
-                Location target = points.get(point);
-                if (tick < flightTicks) {
-                    double t = (double) tick / flightTicks;
-                    // Interpolacion suave para desplazamiento entre puntos sin romper el mapa.
-                    t = t * t * (3 - 2 * t);
-                    Location current = source.clone().add(target.toVector().subtract(source.toVector()).multiply(t));
-                    Vector v = target.toVector().subtract(current.toVector());
-                    if (v.lengthSquared() > 0.01) {
-                        current.setYaw((float) Math.toDegrees(Math.atan2(-v.getX(), v.getZ())));
-                    }
-                    boss.teleport(current);
+                Location target = routePoints.get(point);
+                if (tick <= flightTicks) {
+                    double t = Math.min(1, (double) tick / flightTicks);
+                    double eased = t * t * (3 - 2 * t);
+                    Location current = source.clone().add(target.toVector().subtract(source.toVector()).multiply(eased));
+                    Vector direction = target.toVector().subtract(current.toVector());
+                    if (direction.lengthSquared() > .00001) current.setYaw((float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ())));
+                    if (!boss.teleport(current)) getLogger().warning("No se pudo mover al dragon en " + instance);
                     boss.setVelocity(new Vector(0, 0, 0));
-                } else if (tick == flightTicks) boss.teleport(target);
-                // Mientras descansa en un punto, lanza rafagas de aliento de dragon
-                // contra jugadores cercanos. Efecto sin destruccion de bloques.
-                if (tick >= flightTicks && (tick - flightTicks) % Math.max(1L,
-                        getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 2) * 20L) == 0L) {
-                    double radius = Math.max(1.0, getConfig().getDouble("netherybreis.dragon.attack.radius", 7.0));
-                    double damage = Math.max(0, getConfig().getDouble("netherybreis.dragon.attack.damage", 10.0));
-                    Difficulty diff = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
-                    damage *= difficultyMultiplier(diff, "damage-multiplier", 1.0);
-                    boss.getWorld().spawnParticle(Particle.DRAGON_BREATH, boss.getLocation().clone().add(0, 1, 0),
-                            70, radius / 2, 1.2, radius / 2, 0.03);
-                    boss.getWorld().playSound(boss.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 0.7f, 1.1f);
-                    for (Player player : fighters(boss.getWorld()))
-                        if (player.getLocation().distanceSquared(boss.getLocation()) <= radius * radius)
-                            player.damage(damage, boss);
+                    boss.setFallDistance(0);
+                    if (tick > 0 && tick % flightAttack == 0) dragonFireAttack(instance, boss, false);
+                } else if ((tick - flightTicks - 1) % restAttack == 0) {
+                    dragonFireAttack(instance, boss, true);
                 }
-                if (++tick >= flightTicks + stopTicks) {
-                    source = boss.getLocation().clone();
-                    point = (point + 1) % points.size();
+                if (++tick > flightTicks + stopTicks) {
+                    source = target.clone();
+                    point = (point + 1) % routePoints.size();
                     tick = 0;
                 }
             }
         }.runTaskTimer(this, 1L, 1L);
         netherDragonTasks.put(instance, route);
+    }
+
+    private void startNetherDragonDeathAnimation(String instance, LivingEntity dead) {
+        String cfg = "netherybreis.dragon.death";
+        if (!getConfig().getBoolean(cfg + ".enabled", true)) return;
+        int ticks = Math.max(20, Math.min(200, (int) Math.round(
+                getConfig().getDouble(cfg + ".ascend-seconds", 4.0) * 20)));
+        double height = Math.max(2, getConfig().getDouble(cfg + ".ascend-blocks", 18.0));
+        Location start = dead.getLocation().clone();
+        World world = dead.getWorld();
+        // La entidad original ya esta muriendo: un doble visual de MythicMobs mantiene
+        // el modelo mientras asciende. No participa en combate ni genera loot.
+        try {
+            String mythicId = getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon");
+            LivingEntity visual = spawnMythic(mythicId, start);
+            visual.setInvulnerable(true);
+            visual.setGravity(false);
+            visual.setSilent(true);
+            visual.setRemoveWhenFarAway(false);
+            if (visual instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
+            netherDragonDeathEntities.put(instance, visual.getUniqueId());
+            var animation = new org.bukkit.scheduler.BukkitRunnable() {
+                int elapsed = 0;
+                @Override public void run() {
+                    if (!instanceWorlds.contains(instance) || !visual.isValid()) {
+                        netherDragonDeathTasks.remove(instance);
+                        netherDragonDeathEntities.remove(instance);
+                        if (visual.isValid()) visual.remove();
+                        cancel(); return;
+                    }
+                    double fraction = Math.min(1, (++elapsed) / (double) ticks);
+                    Location next = start.clone().add(0, height * fraction, 0);
+                    next.setYaw(start.getYaw() + elapsed * 5.0f);
+                    visual.teleport(next);
+                    visual.setVelocity(new Vector(0, 0, 0));
+                    if (elapsed % 3 == 0) {
+                        world.spawnParticle(Particle.FLAME, next.clone().add(0, 1, 0), 25, 2.4, 1.3, 2.4, 0.03);
+                        world.spawnParticle(Particle.END_ROD, next, 12, 2.2, 1.5, 2.2, 0.02);
+                    }
+                    if (elapsed >= ticks) {
+                        world.spawnParticle(Particle.EXPLOSION_EMITTER, next, 2, .5, .5, .5);
+                        world.spawnParticle(Particle.FLASH, next, 5, 2.0, 1.0, 2.0);
+                        world.spawnParticle(Particle.END_ROD, next, 160, 4.0, 4.0, 4.0, .25);
+                        world.playSound(next, Sound.ENTITY_ENDER_DRAGON_DEATH, 2.0f, .85f);
+                        world.playSound(next, Sound.ENTITY_GENERIC_EXPLODE, 1.5f, .7f);
+                        visual.remove();
+                        netherDragonDeathEntities.remove(instance);
+                        netherDragonDeathTasks.remove(instance);
+                        cancel();
+                    }
+                }
+            }.runTaskTimer(this, 1L, 1L);
+            netherDragonDeathTasks.put(instance, animation);
+        } catch (Exception ex) {
+            getLogger().log(java.util.logging.Level.WARNING, "No se pudo animar la muerte del Dragon Rojo", ex);
+            world.spawnParticle(Particle.EXPLOSION_EMITTER, start.clone().add(0, 3, 0), 1);
+        }
     }
 
     private void startAdventureBoss(World world, Player trigger) {
@@ -2120,6 +2238,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         org.bukkit.scheduler.BukkitTask dragonTask = netherDragonTasks.remove(name);
         if (dragonTask != null) dragonTask.cancel();
         stopNetherDragonDisplays(name);
+        org.bukkit.scheduler.BukkitTask deathAnimation = netherDragonDeathTasks.remove(name);
+        if (deathAnimation != null) deathAnimation.cancel();
+        UUID deathVisual = netherDragonDeathEntities.remove(name);
+        if (deathVisual != null) { Entity e = Bukkit.getEntity(deathVisual); if (e != null) e.remove(); }
         org.bukkit.scheduler.BukkitTask countdownTask = netherCountdownTasks.remove(name);
         if (countdownTask != null) countdownTask.cancel();
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
@@ -3250,6 +3372,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             org.bukkit.scheduler.BukkitTask task = netherDragonTasks.remove(name);
             if (task != null) task.cancel();
             stopNetherDragonDisplays(name);
+            startNetherDragonDeathAnimation(name, event.getEntity());
         }
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         kingLanding.remove(dead); kingLastLaunch.remove(dead);

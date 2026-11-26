@@ -1,0 +1,20 @@
+# Fusiona estas opciones dentro de 'netherybreis.dragon' de tu config.yml actual.
+# No pegues 'netherybreis:' dos veces en el mismo YAML.
+flight:
+  move-seconds: 10
+  stop-seconds: 10
+  fallback-orbit-radius: 18.0
+attack:
+  enabled: true
+  interval-seconds: 2
+  flight-interval-seconds: 3
+  range-blocks: 45.0
+  vertical-range-blocks: 55.0
+  splash-radius: 2.5
+  damage: 10.0
+  ignite: true
+  fire-seconds: 3
+death:
+  enabled: true
+  ascend-seconds: 4.0
+  ascend-blocks: 18.0

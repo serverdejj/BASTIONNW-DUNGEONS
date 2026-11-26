@@ -367,6 +367,16 @@ netherybreis:
       move-seconds: 10
       stop-seconds: 10
     attack:
-      interval-seconds: 2
-      radius: 7.0
+      enabled: true
+      interval-seconds: 2 # Disparo mientras esta parado
+      flight-interval-seconds: 3 # Tambien dispara mientras vuela
+      range-blocks: 45.0 # Distancia horizontal de deteccion
+      vertical-range-blocks: 55.0 # Alcanza a jugadores bajo el dragon
+      splash-radius: 2.5
       damage: 10.0
+      ignite: true
+      fire-seconds: 3
+    death:
+      enabled: true
+      ascend-seconds: 4.0
+      ascend-blocks: 18.0
