@@ -367,8 +367,9 @@ netherybreis:
       min-height-above-spawn: 6.0
       max-height-above-spawn: 6.0
       cruise-height-above-spawn: 6.0
+      landing-height-above-spawn: 1.0 # Aterrizaje exactamente a +1 bloque del spawn del dragón
       move-seconds: 4
-      descent-seconds: 2 # Bajada hasta el suelo en cada parada
+      descent-seconds: 2 # Bajada hasta +1 bloque sobre el spawn en cada parada
       takeoff-seconds: 2 # Ascenso antes de volar al siguiente punto
       stop-seconds: 10
       max-radius-blocks: 30.0 # Los puntos fuera de este radio se acercan al spawn

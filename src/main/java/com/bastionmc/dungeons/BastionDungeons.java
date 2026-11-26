@@ -1536,23 +1536,15 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         // La explosion del proyectil tiene yield=0: nunca destruye la arena.
     }
 
-    // Busca un lugar de aterrizaje cerca de la cota del spawn, sin descender a cuevas profundas.
-    // Los puntos guardados por un OP representan coordenadas horizontales de parada.
-    private Location netherDragonRouteGround(Location spawn, Location waypoint) {
-        World world = waypoint.getWorld();
-        if (world == null) return waypoint.clone();
-        int x = waypoint.getBlockX(), z = waypoint.getBlockZ();
-        int top = Math.min(world.getMaxHeight() - 3, (int) Math.floor(spawn.getY()) + 4);
-        int bottom = Math.max(world.getMinHeight() + 2, (int) Math.floor(spawn.getY()) - 8);
-        for (int y = top; y >= bottom; y--) {
-            Block below = world.getBlockAt(x, y - 1, z);
-            Block feet = world.getBlockAt(x, y, z);
-            Block head = world.getBlockAt(x, y + 1, z);
-            if (below.getType().isSolid() && !below.isLiquid() && feet.isPassable() && head.isPassable())
-                return new Location(world, x + 0.5, y + 0.15, z + 0.5, waypoint.getYaw(), 0);
-        }
-        // Si no hay suelo seguro, se conserva la altura del spawn y se evita buscar cuevas.
-        return new Location(world, x + 0.5, spawn.getY(), z + 0.5, waypoint.getYaw(), 0);
+    // Cada punto guardado con /dungeon dragon punto add es el destino real
+    // de aterrizaje. Se conserva su Y original, sin sustituirla por la del spawn
+    // principal y sin buscar bloques/techos cercanos.
+    private Location netherDragonRouteGround(Location waypoint) {
+        double offset = getConfig().getDouble("netherybreis.dragon.flight.landing-height-above-point", 1.0);
+        Location landing = waypoint.clone();
+        landing.setY(waypoint.getY() + offset);
+        landing.setPitch(0);
+        return landing;
     }
 
     private void startNetherDragonRoute(String instance, LivingEntity boss) {
@@ -1563,21 +1555,28 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         final Location spawnCenter = center.clone();
         String base = "netherybreis.dragon.flight";
         double radius = Math.max(4, getConfig().getDouble(base + ".max-radius-blocks", 30.0));
-        List<Location> stops = new ArrayList<>();
-        for (Location point : netherDragonPoints(instance))
-            stops.add(clampNetherDragonPoint(spawnCenter, point, radius));
-        if (stops.isEmpty()) {
+        List<Location> savedPoints = netherDragonPoints(instance);
+        List<Location> airStops = new ArrayList<>();
+        List<Location> landingStops = new ArrayList<>();
+        for (Location point : savedPoints) {
+            // El punto de bajada mantiene su altura Y exacta incluso si el
+            // destino de crucero se ajusta al radio permitido de la arena.
+            Location air = clampNetherDragonPoint(spawnCenter, point, radius);
+            airStops.add(air);
+            landingStops.add(netherDragonRouteGround(point));
+        }
+        if (airStops.isEmpty()) {
             double orbit = Math.min(radius, Math.max(6, getConfig().getDouble(base + ".fallback-orbit-radius", 18)));
             for (int i = 0; i < 4; i++) {
                 double angle = i * Math.PI / 2;
-                stops.add(clampNetherDragonPoint(spawnCenter,
-                        spawnCenter.clone().add(Math.cos(angle) * orbit, 0, Math.sin(angle) * orbit), radius));
+                Location point = spawnCenter.clone().add(Math.cos(angle) * orbit, 0, Math.sin(angle) * orbit);
+                airStops.add(clampNetherDragonPoint(spawnCenter, point, radius));
+                landingStops.add(netherDragonRouteGround(point));
             }
             getLogger().warning("Dragon " + instance + ": sin puntos guardados, patrulla automatica.");
         }
-        final List<Location> airTargets = List.copyOf(stops);
-        final List<Location> groundTargets = new ArrayList<>();
-        for (Location air : airTargets) groundTargets.add(netherDragonRouteGround(spawnCenter, air));
+        final List<Location> airTargets = List.copyOf(airStops);
+        final List<Location> groundTargets = List.copyOf(landingStops);
         final long moveTicks = Math.max(20, getConfig().getLong(base + ".move-seconds", 4) * 20);
         final long descendTicks = Math.max(10, getConfig().getLong(base + ".descent-seconds", 2) * 20);
         final long ascendTicks = Math.max(10, getConfig().getLong(base + ".takeoff-seconds", 2) * 20);
@@ -1589,7 +1588,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         boss.setGravity(false);
         boss.setCollidable(false);
         getLogger().info("[Dragon] Patrulla " + instance + ": " + airTargets.size() +
-                " paradas; crucero a " + (airTargets.get(0).getY() - spawnCenter.getY()) + " bloques sobre spawn; despegue, vuelo, aterrizaje.");
+                " paradas; crucero a " + (airTargets.get(0).getY() - spawnCenter.getY()) + " bloques sobre spawn; aterrizaje a +1 de cada punto guardado.");
         var task = new org.bukkit.scheduler.BukkitRunnable() {
             int targetIndex = 0;
             long ticks = 0;

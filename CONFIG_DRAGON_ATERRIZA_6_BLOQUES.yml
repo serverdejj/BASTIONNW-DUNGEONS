@@ -6,6 +6,7 @@ netherybreis:
       min-height-above-spawn: 6.0
       max-height-above-spawn: 6.0
       cruise-height-above-spawn: 6.0
+      landing-height-above-point: 1.0 # Aterrizaje a +1 bloque de cada /dungeon dragon punto add
       move-seconds: 4
       descent-seconds: 2
       takeoff-seconds: 2
