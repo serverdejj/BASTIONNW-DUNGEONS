@@ -1417,13 +1417,9 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (horizontal.lengthSquared() > radius * radius) horizontal.normalize().multiply(radius);
         Location allowed = center.clone().add(horizontal.getX(), desired.getY() - center.getY(), horizontal.getZ());
         allowed.setYaw(desired.getYaw()); allowed.setPitch(0);
-        // V1.2.45: los waypoints son aéreos, a altura FIJA respecto al spawn.
-        // No buscar el suelo: el algoritmo anterior encontraba cuevas y llevaba al jefe bajo tierra.
-        double minHeight = getConfig().getDouble("netherybreis.dragon.flight.min-height-above-spawn", 10.0);
-        double maxHeight = getConfig().getDouble("netherybreis.dragon.flight.max-height-above-spawn", 15.0);
-        if (maxHeight < minHeight) maxHeight = minHeight;
-        double selectedHeight = getConfig().getDouble("netherybreis.dragon.flight.cruise-height-above-spawn", 12.0);
-        allowed.setY(center.getY() + Math.max(minHeight, Math.min(maxHeight, selectedHeight)));
+        // Altura de crucero sobre el spawn. El aterrizaje usa otro destino a nivel del suelo.
+        double selectedHeight = getConfig().getDouble("netherybreis.dragon.flight.cruise-height-above-spawn", 6.0);
+        allowed.setY(center.getY() + Math.max(1.0, selectedHeight));
         return allowed;
     }
 
@@ -1540,6 +1536,25 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         // La explosion del proyectil tiene yield=0: nunca destruye la arena.
     }
 
+    // Busca un lugar de aterrizaje cerca de la cota del spawn, sin descender a cuevas profundas.
+    // Los puntos guardados por un OP representan coordenadas horizontales de parada.
+    private Location netherDragonRouteGround(Location spawn, Location waypoint) {
+        World world = waypoint.getWorld();
+        if (world == null) return waypoint.clone();
+        int x = waypoint.getBlockX(), z = waypoint.getBlockZ();
+        int top = Math.min(world.getMaxHeight() - 3, (int) Math.floor(spawn.getY()) + 4);
+        int bottom = Math.max(world.getMinHeight() + 2, (int) Math.floor(spawn.getY()) - 8);
+        for (int y = top; y >= bottom; y--) {
+            Block below = world.getBlockAt(x, y - 1, z);
+            Block feet = world.getBlockAt(x, y, z);
+            Block head = world.getBlockAt(x, y + 1, z);
+            if (below.getType().isSolid() && !below.isLiquid() && feet.isPassable() && head.isPassable())
+                return new Location(world, x + 0.5, y + 0.15, z + 0.5, waypoint.getYaw(), 0);
+        }
+        // Si no hay suelo seguro, se conserva la altura del spawn y se evita buscar cuevas.
+        return new Location(world, x + 0.5, spawn.getY(), z + 0.5, waypoint.getYaw(), 0);
+    }
+
     private void startNetherDragonRoute(String instance, LivingEntity boss) {
         org.bukkit.scheduler.BukkitTask old = netherDragonTasks.remove(instance);
         if (old != null) old.cancel();
@@ -1556,29 +1571,32 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             for (int i = 0; i < 4; i++) {
                 double angle = i * Math.PI / 2;
                 stops.add(clampNetherDragonPoint(spawnCenter,
-                        spawnCenter.clone().add(Math.cos(angle) * orbit, 5, Math.sin(angle) * orbit), radius));
+                        spawnCenter.clone().add(Math.cos(angle) * orbit, 0, Math.sin(angle) * orbit), radius));
             }
             getLogger().warning("Dragon " + instance + ": sin puntos guardados, patrulla automatica.");
         }
-        final List<Location> targets = List.copyOf(stops);
+        final List<Location> airTargets = List.copyOf(stops);
+        final List<Location> groundTargets = new ArrayList<>();
+        for (Location air : airTargets) groundTargets.add(netherDragonRouteGround(spawnCenter, air));
         final long moveTicks = Math.max(20, getConfig().getLong(base + ".move-seconds", 4) * 20);
+        final long descendTicks = Math.max(10, getConfig().getLong(base + ".descent-seconds", 2) * 20);
+        final long ascendTicks = Math.max(10, getConfig().getLong(base + ".takeoff-seconds", 2) * 20);
         final long stopTicks = Math.max(20, getConfig().getLong(base + ".stop-seconds", 10) * 20);
         final long flightAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.flight-interval-seconds", 6) * 20);
         final long restAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 6) * 20);
         final long fireballEvery = Math.max(1, getConfig().getLong("netherybreis.dragon.fireballs.interval-seconds", 8) * 20);
-        final double minFlightY = spawnCenter.getY() + getConfig().getDouble(base + ".min-height-above-spawn", 10.0);
-        final double maxFlightY = spawnCenter.getY() + getConfig().getDouble(base + ".max-height-above-spawn", 15.0);
         if (boss instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
         boss.setGravity(false);
         boss.setCollidable(false);
-        getLogger().info("[Dragon] Iniciando patrulla en " + instance + ": " + targets.size() +
-                " paradas, radio=" + radius + ", vuelo=" + moveTicks / 20 + "s, descanso=" + stopTicks / 20 + "s.");
+        getLogger().info("[Dragon] Patrulla " + instance + ": " + airTargets.size() +
+                " paradas; crucero a " + (airTargets.get(0).getY() - spawnCenter.getY()) + " bloques sobre spawn; despegue, vuelo, aterrizaje.");
         var task = new org.bukkit.scheduler.BukkitRunnable() {
             int targetIndex = 0;
             long ticks = 0;
-            boolean resting = false;
+            // 0=despegue, 1=vuelo horizontal, 2=descenso, 3=descanso en suelo
+            int phase = 0;
             Location origin = boss.getLocation().clone();
-            Location destination = targets.get(0);
+            Location destination = airTargets.get(0);
             int failedMoves = 0;
             long fireballClock = 0;
             @Override public void run() {
@@ -1587,53 +1605,59 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         netherDragonTasks.remove(instance); cancel(); return;
                     }
                     ticks++;
-                    if (!resting) {
-                        // Vuela a través de estructuras (no las destruye), asciende, avanza, baja.
-                        // El punto de destino siempre es la superficie registrada por el OP.
-                        double t = Math.min(1.0, ticks / (double) moveTicks);
+                    long duration = phase == 0 ? ascendTicks : phase == 1 ? moveTicks : descendTicks;
+                    if (phase != 3) {
+                        double t = Math.min(1.0, ticks / (double) duration);
                         double smooth = t * t * (3.0 - 2.0 * t);
                         Location next = origin.clone().add(destination.toVector().subtract(origin.toVector()).multiply(smooth));
-                        // Evitar descender al subsuelo o exceder el techo de vuelo configurado.
-                        next.setY(Math.max(minFlightY, Math.min(Math.max(minFlightY, maxFlightY), next.getY())));
                         Vector face = destination.toVector().subtract(boss.getLocation().toVector());
-                        if (face.lengthSquared() > 0.001)
+                        if (phase == 1 && face.lengthSquared() > 0.001)
                             next.setYaw((float) Math.toDegrees(Math.atan2(-face.getX(), face.getZ())));
                         if (!moveNetherDragon(boss, next)) {
                             if (++failedMoves % 20 == 0) getLogger().warning("[Dragon] Teleport cancelado " + failedMoves + " veces en " + instance);
                         } else failedMoves = 0;
                         if (ticks % flightAttack == 0) {
                             try { dragonFireAttack(instance, boss, false); }
-                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en vuelo; patrulla continua", attackError); }
+                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en vuelo", attackError); }
                         }
-                        if (ticks >= moveTicks) {
-                            moveNetherDragon(boss, destination);
-                            resting = true;
+                        if (ticks >= duration) {
+                            if (!moveNetherDragon(boss, destination)) return;
                             ticks = 0;
-                            getLogger().info("[Dragon] Aterrizo en parada " + (targetIndex + 1) + "/" + targets.size() + " de " + instance);
-                            boss.getWorld().spawnParticle(Particle.CLOUD, destination, 35, 1.5, 0.3, 1.5, 0.05);
+                            origin = boss.getLocation().clone();
+                            if (phase == 0) { // ya ganó altura; volar al siguiente punto
+                                phase = 1;
+                                destination = airTargets.get(targetIndex);
+                            } else if (phase == 1) { // iniciar bajada real hasta el terreno
+                                phase = 2;
+                                destination = groundTargets.get(targetIndex);
+                            } else { // ya tocó el suelo; reposar antes del despegue
+                                phase = 3;
+                                boss.getWorld().spawnParticle(Particle.CLOUD, destination, 35, 1.5, 0.3, 1.5, 0.05);
+                                getLogger().info("[Dragon] Aterrizo en parada " + (targetIndex + 1) + "/" + airTargets.size() + " de " + instance);
+                            }
                         }
                     } else {
                         boss.setVelocity(new Vector(0, 0, 0));
                         if (ticks % restAttack == 0) {
                             try { dragonFireAttack(instance, boss, true); }
-                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en parada; patrulla continua", attackError); }
+                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en parada", attackError); }
                         }
                         if (ticks >= stopTicks) {
-                            resting = false;
                             ticks = 0;
+                            phase = 0;
                             origin = boss.getLocation().clone();
-                            targetIndex = (targetIndex + 1) % targets.size();
-                            destination = targets.get(targetIndex);
+                            // Despegar verticalmente sobre la parada actual antes de ir a la siguiente.
+                            destination = airTargets.get(targetIndex);
+                            targetIndex = (targetIndex + 1) % airTargets.size();
                         }
                     }
                     if (++fireballClock >= fireballEvery) {
                         fireballClock = 0;
                         try { dragonGhastFireball(instance, boss); }
-                        catch (Exception fireballError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo bola de fuego; patrulla continua", fireballError); }
+                        catch (Exception fireballError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo bola de fuego", fireballError); }
                     }
-                    // Cada cierto tiempo informar si otro plugin reemplazo la posicion del dragon.
                     if (ticks % 100 == 0 && failedMoves == 0)
-                        getLogger().fine("[Dragon] " + instance + " fase=" + (resting ? "ATERRIZADO" : "VOLANDO") + " pos=" + boss.getLocation());
+                        getLogger().fine("[Dragon] " + instance + " fase=" + phase + " pos=" + boss.getLocation());
                 } catch (Exception error) {
                     getLogger().log(java.util.logging.Level.SEVERE, "[Dragon] Error en controlador de vuelo, " + instance, error);
                     netherDragonTasks.remove(instance);

@@ -1,0 +1,12 @@
+# Copia SOLO estas opciones dentro de netherybreis.dragon.flight
+# de tu config.yml actual, sin reemplazar tus otros ajustes.
+netherybreis:
+  dragon:
+    flight:
+      min-height-above-spawn: 6.0
+      max-height-above-spawn: 6.0
+      cruise-height-above-spawn: 6.0
+      move-seconds: 4
+      descent-seconds: 2
+      takeoff-seconds: 2
+      stop-seconds: 10
