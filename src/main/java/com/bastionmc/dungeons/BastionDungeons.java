@@ -113,6 +113,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     // Dragon de Netherybreis: rutas y tareas por instancia, nunca globales.
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonTasks = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherCountdownTasks = new HashMap<>();
+    // Una BossBar y una secuencia de aterrizaje por instancia Nether.
+    private final Map<String, org.bukkit.boss.BossBar> netherDragonBars = new HashMap<>();
+    private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonBarTasks = new HashMap<>();
+    private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonEntranceTasks = new HashMap<>();
 
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
@@ -271,6 +275,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         netherDragonTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherCountdownTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
         netherDragonTasks.clear(); netherCountdownTasks.clear();
+        netherDragonEntranceTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
+        netherDragonBarTasks.values().forEach(org.bukkit.scheduler.BukkitTask::cancel);
+        netherDragonBars.values().forEach(org.bukkit.boss.BossBar::removeAll);
+        netherDragonEntranceTasks.clear(); netherDragonBarTasks.clear(); netherDragonBars.clear();
         kingLanding.clear(); kingLastLaunch.clear(); saveSchedule();
     }
 
@@ -432,6 +440,12 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             String mob = getConfig().getString("labyrinth.mobs." + kind + ".mythic-id", "");
             if (mob != null && !mob.isBlank()) ids.add(mob);
         }
+        for (String path : List.of("netherybreis.piglins.melee.mythic-id", "netherybreis.piglins.crossbow.mythic-id", "netherybreis.dragon.mythic-id")) {
+            String mob = getConfig().getString(path, "");
+            if (mob != null && !mob.isBlank()) ids.add(mob);
+        }
+        if (raw.equalsIgnoreCase("dragon") || raw.equalsIgnoreCase("dragonrojo") || raw.equalsIgnoreCase("dragón"))
+            return getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon");
         for (String id : ids) if (id.equalsIgnoreCase(raw)) return id;
         return null;
     }
@@ -1167,16 +1181,25 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private void spawnNetherDragon(World world) {
         String instance = world.getName();
         if (!instanceWorlds.contains(instance) || finishing.contains(instance) || fighters(world).isEmpty()) return;
-        Location at = netherDragonSpawn(instance);
-        if (at == null) { adventureBossStarted.remove(instance); return; }
+        Location landing = netherDragonSpawn(instance);
+        if (landing == null) { adventureBossStarted.remove(instance); return; }
         String id = getConfig().getString("netherybreis.dragon.mythic-id", "BastionRedDragon");
+        String cfg = "netherybreis.dragon.entrance";
+        boolean entrance = getConfig().getBoolean(cfg + ".enabled", true);
+        double height = Math.max(0.0, Math.min(100.0, getConfig().getDouble(cfg + ".height-above-spawn", 20.0)));
+        int duration = Math.max(1, Math.min(600, (int) Math.round(getConfig().getDouble(cfg + ".descent-seconds", 5.0) * 20)));
+        Location initial = landing.clone().add(0, entrance ? height : 0, 0);
         try {
-            LivingEntity dragon = spawnMythic(id, at);
+            LivingEntity dragon = spawnMythic(id, initial);
             Difficulty difficulty = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
             var health = dragon.getAttribute(org.bukkit.attribute.Attribute.MAX_HEALTH);
             double max = Math.max(1, getConfig().getDouble("netherybreis.dragon.health", 3500)
                     * difficultyMultiplier(difficulty, "health-multiplier", 1));
-            if (health != null) health.setBaseValue(max);
+            // Respetar el máximo admitido por atributos del servidor, sin provocar excepciones.
+            if (health != null) {
+                try { health.setBaseValue(max); }
+                catch (IllegalArgumentException ex) { getLogger().warning("Vida del dragón excede el limite de atributos: " + ex.getMessage()); }
+            }
             dragon.setHealth(Math.min(dragon.getMaxHealth(), max));
             var scale = dragon.getAttribute(org.bukkit.attribute.Attribute.SCALE);
             if (scale != null) scale.setBaseValue(Math.max(0.1, Math.min(8, getConfig().getDouble("netherybreis.dragon.scale", 0.5))));
@@ -1190,12 +1213,117 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 player.playSound(player.getLocation(), Sound.ENTITY_ENDER_DRAGON_GROWL, 1f, 0.7f);
                 msg(player, getConfig().getString("netherybreis.dragon.spawn-message", "&#FF5555&l¡El Dragón Rojo ha aparecido!"));
             }
-            startNetherDragonRoute(instance, dragon);
+            startNetherDragonBossBar(instance, dragon);
+            if (entrance && height > 0) startNetherDragonEntrance(instance, dragon, landing, duration);
+            else startNetherDragonRoute(instance, dragon);
         } catch (Exception ex) {
             adventureBossStarted.remove(instance);
             getLogger().log(java.util.logging.Level.SEVERE, "No se pudo crear BastionRedDragon en " + instance, ex);
             for (Player p : fighters(world)) msg(p, "&cNo se pudo generar el dragón: revisa MythicMobs y el modelo.");
         }
+    }
+
+    private void stopNetherDragonDisplays(String instance) {
+        org.bukkit.scheduler.BukkitTask entry = netherDragonEntranceTasks.remove(instance);
+        if (entry != null) entry.cancel();
+        org.bukkit.scheduler.BukkitTask barTask = netherDragonBarTasks.remove(instance);
+        if (barTask != null) barTask.cancel();
+        org.bukkit.boss.BossBar bar = netherDragonBars.remove(instance);
+        if (bar != null) bar.removeAll();
+    }
+
+    private void startNetherDragonBossBar(String instance, LivingEntity dragon) {
+        stopNetherDragonDisplays(instance);
+        String cfg = "netherybreis.dragon.bossbar";
+        if (!getConfig().getBoolean(cfg + ".enabled", true)) return;
+        org.bukkit.boss.BarColor color;
+        org.bukkit.boss.BarStyle style;
+        try { color = org.bukkit.boss.BarColor.valueOf(getConfig().getString(cfg + ".color", "RED").toUpperCase(Locale.ROOT)); }
+        catch (IllegalArgumentException ex) { color = org.bukkit.boss.BarColor.RED; }
+        try { style = org.bukkit.boss.BarStyle.valueOf(getConfig().getString(cfg + ".style", "SOLID").toUpperCase(Locale.ROOT)); }
+        catch (IllegalArgumentException ex) { style = org.bukkit.boss.BarStyle.SOLID; }
+        org.bukkit.boss.BossBar bar = Bukkit.createBossBar("", color, style);
+        netherDragonBars.put(instance, bar);
+        var task = new org.bukkit.scheduler.BukkitRunnable() {
+            @Override public void run() {
+                if (!instanceWorlds.contains(instance) || finishing.contains(instance) || dragon.isDead() || !dragon.isValid()) {
+                    cancel(); netherDragonBarTasks.remove(instance);
+                    org.bukkit.boss.BossBar old = netherDragonBars.remove(instance);
+                    if (old != null) old.removeAll();
+                    return;
+                }
+                double current = Math.max(0, dragon.getHealth());
+                double max = Math.max(1, dragon.getMaxHealth());
+                String title = getConfig().getString(cfg + ".title", "&#FF3434&lDRAGÓN ROJO &8| &c❤ {health}/{max_health}")
+                        .replace("{health}", String.valueOf((int) Math.ceil(current)))
+                        .replace("{max_health}", String.valueOf((int) Math.ceil(max)));
+                bar.setTitle(format(title));
+                bar.setProgress(Math.max(0, Math.min(1, current / max)));
+                List<Player> players = fighters(dragon.getWorld());
+                for (Player p : new ArrayList<>(bar.getPlayers())) if (!players.contains(p)) bar.removePlayer(p);
+                for (Player p : players) if (!bar.getPlayers().contains(p)) bar.addPlayer(p);
+            }
+        }.runTaskTimer(this, 0L, 2L);
+        netherDragonBarTasks.put(instance, task);
+    }
+
+    private void startNetherDragonEntrance(String instance, LivingEntity dragon, Location landing, int duration) {
+        String cfg = "netherybreis.dragon.entrance";
+        Location origin = dragon.getLocation().clone();
+        var task = new org.bukkit.scheduler.BukkitRunnable() {
+            int tick = 0;
+            @Override public void run() {
+                if (!instanceWorlds.contains(instance) || finishing.contains(instance) || dragon.isDead() || !dragon.isValid()) {
+                    netherDragonEntranceTasks.remove(instance); cancel(); return;
+                }
+                double t = Math.min(1, (++tick) / (double) duration);
+                // Entrada suave sin gravedad artificial, preservando el modelo ModelEngine.
+                double eased = t * t * (3 - 2 * t);
+                Location next = origin.clone().add(landing.toVector().subtract(origin.toVector()).multiply(eased));
+                dragon.teleport(next);
+                dragon.setVelocity(new Vector(0, 0, 0));
+                if (tick % 4 == 0) dragon.getWorld().spawnParticle(Particle.FLAME,
+                        next.clone().add(0, 1, 0), 18, 1.5, 0.6, 1.5, 0.035);
+                if (tick >= duration) {
+                    dragon.teleport(landing);
+                    netherDragonEntranceTasks.remove(instance);
+                    cancel();
+                    netherDragonLand(instance, dragon, landing);
+                    startNetherDragonRoute(instance, dragon);
+                }
+            }
+        }.runTaskTimer(this, 1L, 1L);
+        netherDragonEntranceTasks.put(instance, task);
+    }
+
+    private void netherDragonLand(String instance, LivingEntity boss, Location landing) {
+        String cfg = "netherybreis.dragon.entrance";
+        World world = boss.getWorld();
+        world.spawnParticle(Particle.EXPLOSION, landing.clone().add(0, 1, 0), 8, 1.1, 0.7, 1.1);
+        if (getConfig().getBoolean(cfg + ".fire-particles", true)) {
+            world.spawnParticle(Particle.FLAME, landing.clone().add(0, 1, 0), 140, 3.0, 1.5, 3.0, 0.06);
+            world.spawnParticle(Particle.LAVA, landing.clone().add(0, 1, 0), 35, 2.0, 0.5, 2.0);
+        }
+        world.playSound(landing, Sound.ENTITY_GENERIC_EXPLODE, 2.0f, 0.65f);
+        world.playSound(landing, Sound.ENTITY_ENDER_DRAGON_GROWL, 1.5f, 0.8f);
+        double radius = Math.max(0.1, getConfig().getDouble(cfg + ".explosion-radius", 7.0));
+        double damage = Math.max(0, getConfig().getDouble(cfg + ".explosion-damage", 12.0));
+        Difficulty diff = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
+        damage *= difficultyMultiplier(diff, "damage-multiplier", 1.0);
+        boolean nonLethal = getConfig().getBoolean(cfg + ".prevent-lethal", true);
+        double knockback = Math.max(0, getConfig().getDouble(cfg + ".knockback", 0.9));
+        for (Player player : fighters(world)) {
+            if (player.getLocation().distanceSquared(landing) > radius * radius) continue;
+            double dealt = nonLethal ? Math.min(damage, Math.max(0, player.getHealth() - 1.0)) : damage;
+            if (dealt > 0) player.damage(dealt, boss);
+            Vector away = player.getLocation().toVector().subtract(landing.toVector());
+            away.setY(0);
+            if (away.lengthSquared() > 0.001) away.normalize().multiply(knockback);
+            else away.zero();
+            away.setY(Math.max(0, getConfig().getDouble(cfg + ".vertical-knockback", 0.45)));
+            player.setVelocity(away);
+        }
+        // Explosión solo audiovisual: nunca modifica bloques, fuego ni terreno.
     }
 
     private void startNetherDragonRoute(String instance, LivingEntity boss) {
@@ -1991,6 +2119,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
         org.bukkit.scheduler.BukkitTask dragonTask = netherDragonTasks.remove(name);
         if (dragonTask != null) dragonTask.cancel();
+        stopNetherDragonDisplays(name);
         org.bukkit.scheduler.BukkitTask countdownTask = netherCountdownTasks.remove(name);
         if (countdownTask != null) countdownTask.cancel();
         org.bukkit.scheduler.BukkitTask tracker = trackers.remove(name);
@@ -3120,6 +3249,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         if (isNetherAdventure(name) && bosses.getOrDefault(name, Set.of()).contains(dead)) {
             org.bukkit.scheduler.BukkitTask task = netherDragonTasks.remove(name);
             if (task != null) task.cancel();
+            stopNetherDragonDisplays(name);
         }
         protectedMobs.remove(dead); lostTicks.remove(dead); lastMobPositions.remove(dead); enemyTypes.remove(dead);
         kingLanding.remove(dead); kingLastLaunch.remove(dead);

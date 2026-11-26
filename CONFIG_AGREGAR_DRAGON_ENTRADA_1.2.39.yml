@@ -1,0 +1,17 @@
+# Añadir DENTRO de netherybreis.dragon existente, NO como sección raíz duplicada.
+# Secciones para copiar y pegar al lado de flight: y attack:.
+entrance:
+  enabled: true
+  height-above-spawn: 20.0
+  descent-seconds: 5
+  explosion-radius: 7.0
+  explosion-damage: 12.0
+  prevent-lethal: true
+  knockback: 0.9
+  vertical-knockback: 0.45
+  fire-particles: true
+bossbar:
+  enabled: true
+  title: '&#FF3434&lDRAGÓN ROJO &8| &c❤ {health}/{max_health}'
+  color: RED
+  style: SOLID
