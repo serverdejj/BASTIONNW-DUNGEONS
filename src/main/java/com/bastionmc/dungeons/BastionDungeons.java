@@ -119,6 +119,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonEntranceTasks = new HashMap<>();
     private final Map<String, org.bukkit.scheduler.BukkitTask> netherDragonDeathTasks = new HashMap<>();
     private final Map<String, UUID> netherDragonDeathEntities = new HashMap<>();
+    private final Map<UUID, UUID> dragonFireballOwners = new HashMap<>();
 
     // Herramientas temporales, personales y exclusivas para OP.
     private final Set<UUID> adminBreakMode = new HashSet<>();
@@ -1197,7 +1198,18 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         boolean entrance = getConfig().getBoolean(cfg + ".enabled", true);
         double height = Math.max(0.0, Math.min(100.0, getConfig().getDouble(cfg + ".height-above-spawn", 20.0)));
         int duration = Math.max(1, Math.min(600, (int) Math.round(getConfig().getDouble(cfg + ".descent-seconds", 5.0) * 20)));
-        Location initial = landing.clone().add(0, entrance ? height : 0, 0);
+        // Evitar generar el modelo dentro del techo: buscar espacio desde el spawn hacia arriba.
+        double usableHeight = 0;
+        if (entrance) {
+            for (double y = 1; y <= height; y += 1) {
+                Location scan = landing.clone().add(0, y, 0);
+                if (!scan.getBlock().isPassable() || !scan.clone().add(0, 1.0, 0).getBlock().isPassable()) break;
+                usableHeight = y;
+            }
+        }
+        // Dejar margen para las alas y el tamaño del modelo bajo el techo.
+        usableHeight = Math.max(0, usableHeight - 3.0);
+        Location initial = landing.clone().add(0, entrance ? usableHeight : 0, 0);
         try {
             LivingEntity dragon = spawnMythic(id, initial);
             Difficulty difficulty = worldDifficulties.getOrDefault(instance, Difficulty.NORMAL);
@@ -1226,7 +1238,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 msg(player, getConfig().getString("netherybreis.dragon.spawn-message", "&#FF5555&l¡El Dragón Rojo ha aparecido!"));
             }
             startNetherDragonBossBar(instance, dragon);
-            if (entrance && height > 0) startNetherDragonEntrance(instance, dragon, landing, duration);
+            if (entrance && usableHeight > 1) startNetherDragonEntrance(instance, dragon, landing, duration);
             else startNetherDragonRoute(instance, dragon);
         } catch (Exception ex) {
             adventureBossStarted.remove(instance);
@@ -1383,55 +1395,158 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         dragon.getWorld().spawnParticle(Particle.FLAME, to, 36, 1.0, 0.8, 1.0, 0.05);
     }
 
+    // Respetar el limite horizontal de 30 bloques respecto al punto de spawn.
+    private Location clampNetherDragonPoint(Location center, Location desired, double radius) {
+        Vector off = desired.toVector().subtract(center.toVector());
+        Vector horizontal = new Vector(off.getX(), 0, off.getZ());
+        if (horizontal.lengthSquared() > radius * radius) horizontal.normalize().multiply(radius);
+        Location safe = center.clone().add(horizontal.getX(), 0, horizontal.getZ());
+        safe.setY(desired.getY());
+        // Evita subir a través del techo, pero conserva la altura marcada por el OP.
+        for (int y = 0; y <= 15; y++) {
+            Location down = safe.clone().subtract(0, y, 0);
+            boolean clear = true;
+            for (int h = 0; h <= 4; h++) {
+                if (!down.clone().add(0, h, 0).getBlock().isPassable()) { clear = false; break; }
+            }
+            if (clear) { safe = down; break; }
+        }
+        safe.setYaw(desired.getYaw()); safe.setPitch(0);
+        return safe;
+    }
+
+    private Player netherDragonTarget(LivingEntity boss, double range, double vertical) {
+        Player closest = null;
+        double best = Double.POSITIVE_INFINITY;
+        Location from = boss.getLocation();
+        for (Player p : fighters(boss.getWorld())) {
+            if (!p.isValid() || p.isDead() || p.getGameMode() == GameMode.SPECTATOR) continue;
+            double horiz = horizontalDistanceSquared(from, p.getLocation());
+            if (horiz > range * range || Math.abs(from.getY() - p.getLocation().getY()) > vertical) continue;
+            if (horiz < best) { best = horiz; closest = p; }
+        }
+        return closest;
+    }
+
+    private void dragonGhastFireball(String instance, LivingEntity boss) {
+        String base = "netherybreis.dragon.fireballs";
+        if (!getConfig().getBoolean(base + ".enabled", true)) return;
+        double range = getConfig().getDouble(base + ".range-blocks", 50.0);
+        double vertical = getConfig().getDouble(base + ".vertical-range-blocks", 60.0);
+        Player target = netherDragonTarget(boss, range, vertical);
+        if (target == null) return;
+        Location aim = target.getEyeLocation().clone();
+        // Se origina bajo el pecho y unos bloques delante del dragon; no dentro de su hitbox.
+        Location chest = boss.getLocation().clone().add(0, -1.0, 0);
+        Vector dir = aim.toVector().subtract(chest.toVector());
+        if (dir.lengthSquared() < 0.01) return;
+        dir.normalize();
+        Location muzzle = chest.clone().add(dir.clone().multiply(3.0));
+        if (!muzzle.getBlock().isPassable()) {
+            muzzle = chest.clone().add(0, -1.5, 0);
+            if (!muzzle.getBlock().isPassable()) return;
+        }
+        final Vector shot = aim.toVector().subtract(muzzle.toVector()).normalize();
+        double speed = Math.max(0.3, Math.min(2.0, getConfig().getDouble(base + ".speed", 1.0)));
+        org.bukkit.entity.LargeFireball ball = boss.getWorld().spawn(muzzle, org.bukkit.entity.LargeFireball.class, projectile -> {
+            projectile.setShooter(boss);
+            projectile.setIsIncendiary(false);
+            projectile.setYield(0f);
+            projectile.setDirection(shot);
+            projectile.setVelocity(shot.clone().multiply(speed));
+        });
+        dragonFireballOwners.put(ball.getUniqueId(), boss.getUniqueId());
+        boss.getWorld().playSound(muzzle, Sound.ENTITY_GHAST_SHOOT, 1.5f, 0.75f);
+        // Evitar que bolas sin impacto se queden para siempre.
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            dragonFireballOwners.remove(ball.getUniqueId());
+            if (ball.isValid()) ball.remove();
+        }, 120L);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public void onNetherDragonFireballHit(org.bukkit.event.entity.ProjectileHitEvent event) {
+        UUID ownerId = dragonFireballOwners.remove(event.getEntity().getUniqueId());
+        if (ownerId == null) return;
+        org.bukkit.entity.Projectile projectile = event.getEntity();
+        Location at = projectile.getLocation();
+        World world = at.getWorld();
+        if (world == null) return;
+        world.spawnParticle(Particle.EXPLOSION, at, 3, 0.3, 0.3, 0.3);
+        world.spawnParticle(Particle.FLAME, at, 45, 1.2, 0.9, 1.2, 0.06);
+        world.playSound(at, Sound.ENTITY_GENERIC_EXPLODE, 1.3f, 1.0f);
+        String configPath = "netherybreis.dragon.fireballs";
+        double radius = Math.max(0, getConfig().getDouble(configPath + ".splash-radius", 2.5));
+        double damage = Math.max(0, getConfig().getDouble(configPath + ".damage", 12));
+        damage *= difficultyMultiplier(worldDifficulties.getOrDefault(world.getName(), Difficulty.NORMAL), "damage-multiplier", 1);
+        Entity source = Bukkit.getEntity(ownerId);
+        for (Player player : fighters(world)) {
+            if (player.isDead() || player.getLocation().distanceSquared(at) > radius * radius) continue;
+            if (source instanceof LivingEntity dragon) player.damage(damage, dragon);
+            else player.damage(damage);
+            player.setFireTicks(Math.max(player.getFireTicks(), 20 * Math.max(0, getConfig().getInt(configPath + ".fire-seconds", 3))));
+        }
+        // La explosion del proyectil tiene yield=0: nunca destruye la arena.
+    }
+
     private void startNetherDragonRoute(String instance, LivingEntity boss) {
         org.bukkit.scheduler.BukkitTask previous = netherDragonTasks.remove(instance);
         if (previous != null) previous.cancel();
-        List<Location> points = netherDragonPoints(instance);
+        Location spawn = netherDragonSpawn(instance);
+        if (spawn == null) spawn = boss.getLocation().clone();
+        final Location center = spawn;
+        double maxRadius = Math.max(4, getConfig().getDouble("netherybreis.dragon.flight.max-radius-blocks", 30.0));
+        List<Location> points = new ArrayList<>();
+        for (Location p : netherDragonPoints(instance)) points.add(clampNetherDragonPoint(center, p, maxRadius));
         if (points.isEmpty()) {
-            // Las rutas guardadas mandan. Solo si no hay ninguna se genera un circuito provisional.
-            Location center = netherDragonSpawn(instance);
-            if (center == null) center = boss.getLocation();
-            double radius = Math.max(6, getConfig().getDouble("netherybreis.dragon.flight.fallback-orbit-radius", 18));
-            points = new ArrayList<>();
+            double radius = Math.min(maxRadius, Math.max(6, getConfig().getDouble("netherybreis.dragon.flight.fallback-orbit-radius", 24)));
             for (int i = 0; i < 4; i++) {
                 double angle = i * Math.PI / 2;
-                points.add(center.clone().add(Math.cos(angle) * radius, 7.0, Math.sin(angle) * radius));
+                points.add(clampNetherDragonPoint(center, center.clone().add(Math.cos(angle) * radius, 5, Math.sin(angle) * radius), maxRadius));
             }
-            getLogger().warning("Dragon de " + instance + " sin puntos guardados: circuito automatico provisional. Configura /dungeon dragon punto add.");
+            getLogger().warning("Dragon " + instance + " sin puntos: se usa una orbita automatica.");
         }
-        final List<Location> routePoints = points;
-        final long flightTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.flight.move-seconds", 10) * 20);
+        final List<Location> routePoints = List.copyOf(points);
+        final long flyTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.flight.move-seconds", 10) * 20);
         final long stopTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.flight.stop-seconds", 10) * 20);
         final long flightAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.flight-interval-seconds", 3) * 20);
         final long restAttack = Math.max(1, getConfig().getLong("netherybreis.dragon.attack.interval-seconds", 2) * 20);
+        final long fireballTicks = Math.max(1, getConfig().getLong("netherybreis.dragon.fireballs.interval-seconds", 3) * 20);
         boss.setGravity(false);
         if (boss instanceof org.bukkit.entity.Mob mob) mob.setAI(false);
+        getLogger().info("Iniciando ruta de dragón en " + instance + " con " + routePoints.size() + " puntos (radio " + maxRadius + ")");
         var route = new org.bukkit.scheduler.BukkitRunnable() {
             int point = 0;
-            long tick = 0;
+            long ticks = 0;
             Location source = boss.getLocation().clone();
             @Override public void run() {
                 if (!instanceWorlds.contains(instance) || finishing.contains(instance) || boss.isDead() || !boss.isValid()) {
                     netherDragonTasks.remove(instance); cancel(); return;
                 }
                 Location target = routePoints.get(point);
-                if (tick <= flightTicks) {
-                    double t = Math.min(1, (double) tick / flightTicks);
+                if (ticks <= flyTicks) {
+                    double t = Math.min(1, (double) ticks / flyTicks);
                     double eased = t * t * (3 - 2 * t);
-                    Location current = source.clone().add(target.toVector().subtract(source.toVector()).multiply(eased));
-                    Vector direction = target.toVector().subtract(current.toVector());
-                    if (direction.lengthSquared() > .00001) current.setYaw((float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ())));
-                    if (!boss.teleport(current)) getLogger().warning("No se pudo mover al dragon en " + instance);
-                    boss.setVelocity(new Vector(0, 0, 0));
+                    Location intended = source.clone().add(target.toVector().subtract(source.toVector()).multiply(eased));
+                    Vector towards = intended.toVector().subtract(boss.getLocation().toVector());
+                    Vector direction = target.toVector().subtract(boss.getLocation().toVector());
+                    if (direction.lengthSquared() > .001) intended.setYaw((float) Math.toDegrees(Math.atan2(-direction.getX(), direction.getZ())));
+                    // Teletransporte directo para seguir una ruta exacta; velocidad como fallback para sincronizar ModelEngine.
+                    if (!boss.teleport(intended)) {
+                        boss.setVelocity(towards.multiply(0.5));
+                        if (ticks % 40 == 0) getLogger().warning("Dragon: teleport bloqueado en " + instance);
+                    } else boss.setVelocity(new Vector(0, 0, 0));
                     boss.setFallDistance(0);
-                    if (tick > 0 && tick % flightAttack == 0) dragonFireAttack(instance, boss, false);
-                } else if ((tick - flightTicks - 1) % restAttack == 0) {
-                    dragonFireAttack(instance, boss, true);
+                    if (ticks > 0 && ticks % flightAttack == 0) dragonFireAttack(instance, boss, false);
+                } else {
+                    boss.setVelocity(new Vector(0, 0, 0));
+                    if ((ticks - flyTicks - 1) % restAttack == 0) dragonFireAttack(instance, boss, true);
                 }
-                if (++tick > flightTicks + stopTicks) {
-                    source = target.clone();
+                if (ticks > 0 && ticks % fireballTicks == 0) dragonGhastFireball(instance, boss);
+                if (++ticks > flyTicks + stopTicks) {
+                    source = boss.getLocation().clone();
                     point = (point + 1) % routePoints.size();
-                    tick = 0;
+                    ticks = 0;
                 }
             }
         }.runTaskTimer(this, 1L, 1L);
