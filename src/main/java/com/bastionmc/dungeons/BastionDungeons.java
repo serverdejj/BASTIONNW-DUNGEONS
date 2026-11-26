@@ -1371,7 +1371,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
             for (int i = 0, count = Math.min(90, (int) Math.ceil(length / 0.85)); i < count; i++) {
                 particle.add(step);
                 dragon.getWorld().spawnParticle(Particle.FLAME, particle, 3, 0.24, 0.24, 0.24, 0.02);
-                dragon.getWorld().spawnParticle(Particle.DRAGON_BREATH, particle, 2, 0.20, 0.20, 0.20, 0.015);
+                dragon.getWorld().spawnParticle(Particle.SOUL_FIRE_FLAME, particle, 2, 0.20, 0.20, 0.20, 0.015);
             }
         }
         dragon.getWorld().playSound(from, Sound.ENTITY_BLAZE_SHOOT, 1.4f, resting ? 0.65f : 0.85f);
@@ -1562,7 +1562,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         if (!moveNetherDragon(boss, next)) {
                             if (++failedMoves % 20 == 0) getLogger().warning("[Dragon] Teleport cancelado " + failedMoves + " veces en " + instance);
                         } else failedMoves = 0;
-                        if (ticks % flightAttack == 0) dragonFireAttack(instance, boss, false);
+                        if (ticks % flightAttack == 0) {
+                            try { dragonFireAttack(instance, boss, false); }
+                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en vuelo; patrulla continua", attackError); }
+                        }
                         if (ticks >= moveTicks) {
                             moveNetherDragon(boss, destination);
                             resting = true;
@@ -1572,7 +1575,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                         }
                     } else {
                         boss.setVelocity(new Vector(0, 0, 0));
-                        if (ticks % restAttack == 0) dragonFireAttack(instance, boss, true);
+                        if (ticks % restAttack == 0) {
+                            try { dragonFireAttack(instance, boss, true); }
+                            catch (Exception attackError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo ataque en parada; patrulla continua", attackError); }
+                        }
                         if (ticks >= stopTicks) {
                             resting = false;
                             ticks = 0;
@@ -1581,7 +1587,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                             destination = targets.get(targetIndex);
                         }
                     }
-                    if (ticks % fireballEvery == 0) dragonGhastFireball(instance, boss);
+                    if (ticks % fireballEvery == 0) {
+                        try { dragonGhastFireball(instance, boss); }
+                        catch (Exception fireballError) { getLogger().log(java.util.logging.Level.WARNING, "[Dragon] Fallo bola de fuego; patrulla continua", fireballError); }
+                    }
                     // Cada cierto tiempo informar si otro plugin reemplazo la posicion del dragon.
                     if (ticks % 100 == 0 && failedMoves == 0)
                         getLogger().fine("[Dragon] " + instance + " fase=" + (resting ? "ATERRIZADO" : "VOLANDO") + " pos=" + boss.getLocation());
@@ -1634,7 +1643,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                     }
                     if (elapsed >= ticks) {
                         world.spawnParticle(Particle.EXPLOSION_EMITTER, next, 2, .5, .5, .5);
-                        world.spawnParticle(Particle.FLASH, next, 5, 2.0, 1.0, 2.0);
+                        world.spawnParticle(Particle.END_ROD, next, 5, 2.0, 1.0, 2.0);
                         world.spawnParticle(Particle.END_ROD, next, 160, 4.0, 4.0, 4.0, .25);
                         world.playSound(next, Sound.ENTITY_ENDER_DRAGON_DEATH, 2.0f, .85f);
                         world.playSound(next, Sound.ENTITY_GENERIC_EXPLODE, 1.5f, .7f);
@@ -3385,6 +3394,10 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Set<UUID> candidates = new HashSet<>(enemies.getOrDefault(world.getName(), Set.of()));
         if (getConfig().getBoolean("enemy-stalking.include-bosses", true))
             candidates.addAll(bosses.getOrDefault(world.getName(), Set.of()));
+        // El Dragón Rojo tiene controlador propio de vuelo: nunca debe ser acechado
+        // ni teletransportado detrás de los jugadores, aunque include-bosses=true.
+        if (isNetherAdventure(world.getName()))
+            candidates.removeAll(bosses.getOrDefault(world.getName(), Set.of()));
         LivingEntity farthest = null;
         Player closestPlayer = null;
         double bestDistance = -1;
