@@ -376,6 +376,15 @@ netherybreis:
       damage: 10.0
       ignite: true
       fire-seconds: 3
+    fireballs:
+      enabled: true
+      interval-seconds: 3 # Bolas reales de fuego tipo Ghast mientras vuela
+      range-blocks: 50.0
+      vertical-range-blocks: 60.0
+      speed: 1.0
+      damage: 12.0
+      splash-radius: 2.5
+      fire-seconds: 3
     death:
       enabled: true
       ascend-seconds: 4.0

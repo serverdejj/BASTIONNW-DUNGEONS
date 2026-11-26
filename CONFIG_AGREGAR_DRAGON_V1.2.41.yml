@@ -1,0 +1,10 @@
+# Agregar dentro de netherybreis.dragon:
+fireballs:
+  enabled: true
+  interval-seconds: 3
+  range-blocks: 50.0
+  vertical-range-blocks: 60.0
+  speed: 1.0
+  damage: 12.0
+  splash-radius: 2.5
+  fire-seconds: 3
