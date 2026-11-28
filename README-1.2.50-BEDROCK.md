@@ -1,0 +1,3 @@
+# 1.2.50-bedrock-test
+
+Prueba alternativa: EnderDragon vanilla separado, sin IA, oculto por defecto y mostrado solo a jugadores Floodgate. Sin LibsDisguises para este visual. Se sincroniza cada tick y los golpes de jugadores Bedrock se redirigen al jefe original; no cuenta como enemigo ni entrega drops. La visibilidad, animación y detección de golpes multipartes requieren prueba real en Geyser/Purpur. No se han modificado rutas, ataques, puntos ni configuración existente. La opción netherybreis.dragon.bedrock-fallback.enabled es true por defecto; false desactiva esta prueba. No sustituir config.yml ni MythicMobs. Compilar mediante GitHub Actions.

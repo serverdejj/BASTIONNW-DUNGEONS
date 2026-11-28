@@ -206,7 +206,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::checkMapVoidPlayers, 5L, 5L);
         Bukkit.getScheduler().runTaskTimer(this, this::tickMobHolograms, 1L, 1L);
-        getLogger().info("Bastion Dungeons 1.2.49-bedrock-test listo.");
+        getLogger().info("Bastion Dungeons 1.2.50-bedrock-test listo.");
     }
 
     private void loadSchedule() {
@@ -1243,80 +1243,127 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
-    // Bedrock fallback: packet disguise of the existing boss, not a second mob.
+    // Native vanilla visual, separate from ModelEngine and never registered as an enemy.
+    private static final String BEDROCK_DRAGON_TAG = "bastion_bedrock_dragon_visual";
     private final Map<String, org.bukkit.scheduler.BukkitTask> bedrockDragonTasks = new HashMap<>();
-    private final Map<String, Object> bedrockDragonDisguises = new HashMap<>();
+    private final Map<String, org.bukkit.entity.EnderDragon> bedrockDragonVisuals = new HashMap<>();
+    private final Map<UUID, LivingEntity> bedrockDragonOwners = new HashMap<>();
+    private final Map<UUID, Set<UUID>> bedrockDragonViewers = new HashMap<>();
 
-    private void clearBedrockDragonDisguise(String instance) {
-        Object disguise = bedrockDragonDisguises.remove(instance);
-        if (disguise != null) {
-            try { disguise.getClass().getMethod("removeDisguise").invoke(disguise); }
-            catch (ReflectiveOperationException | RuntimeException ex) {
-                getLogger().warning("Dragon Bedrock: no se pudo retirar disfraz: " + ex);
-            }
-        }
+    private void clearBedrockDragonVisual(String instance) {
+        var visual = bedrockDragonVisuals.remove(instance);
+        if (visual == null) return;
+        bedrockDragonOwners.remove(visual.getUniqueId());
+        bedrockDragonViewers.remove(visual.getUniqueId());
+        visual.remove();
     }
 
     private void stopBedrockDragon(String instance) {
         var task = bedrockDragonTasks.remove(instance);
         if (task != null) task.cancel();
-        clearBedrockDragonDisguise(instance);
+        clearBedrockDragonVisual(instance);
+    }
+
+    private Entity bedrockVisualRoot(Entity entity) {
+        return entity instanceof org.bukkit.entity.ComplexEntityPart part ? part.getParent() : entity;
+    }
+
+    private boolean isBedrockDragonVisual(Entity entity) {
+        return bedrockVisualRoot(entity).getScoreboardTags().contains(BEDROCK_DRAGON_TAG);
+    }
+
+    // The visual can never deal damage. Only a visible Bedrock player's hit can
+    // be forwarded to the existing boss, whose normal combat/loot logic remains authoritative.
+    @EventHandler(priority = EventPriority.HIGHEST)
+    public void onBedrockDragonVisualDamage(EntityDamageEvent event) {
+        Entity root = bedrockVisualRoot(event.getEntity());
+        if (event instanceof EntityDamageByEntityEvent hit && isBedrockDragonVisual(hit.getDamager())) {
+            event.setCancelled(true); return;
+        }
+        if (!isBedrockDragonVisual(root)) return;
+        boolean wasCancelled = event.isCancelled();
+        event.setCancelled(true);
+        if (wasCancelled || !(event instanceof EntityDamageByEntityEvent hit)) return;
+        Entity source = hit.getDamager();
+        Player attacker = source instanceof Player p ? p :
+                source instanceof org.bukkit.entity.Projectile projectile && projectile.getShooter() instanceof Player p ? p : null;
+        LivingEntity boss = bedrockDragonOwners.get(root.getUniqueId());
+        if (attacker == null || boss == null || !boss.isValid() || boss.isDead()
+                || attacker.getGameMode() == GameMode.SPECTATOR
+                || !attacker.getWorld().equals(boss.getWorld())
+                || !bedrockDragonViewers.getOrDefault(root.getUniqueId(), Set.of()).contains(attacker.getUniqueId())) return;
+        double damage = event.getDamage();
+        if (Double.isFinite(damage) && damage > 0) boss.damage(damage, source);
     }
 
     private void startBedrockDragon(String instance, LivingEntity dragon) {
         stopBedrockDragon(instance);
         if (!getConfig().getBoolean("netherybreis.dragon.bedrock-fallback.enabled", true)) return;
         var flood = Bukkit.getPluginManager().getPlugin("floodgate");
-        var libs = Bukkit.getPluginManager().getPlugin("LibsDisguises");
-        if (flood == null || !flood.isEnabled() || libs == null || !libs.isEnabled()) {
-            getLogger().warning("Dragon Bedrock: requiere Floodgate y LibsDisguises en Survival."); return;
+        if (flood == null || !flood.isEnabled()) {
+            getLogger().warning("Dragon Bedrock: requiere Floodgate en Survival."); return;
         }
         try {
             Class<?> fg = flood.getClass().getClassLoader().loadClass("org.geysermc.floodgate.api.FloodgateApi");
             Object fgApi = fg.getMethod("getInstance").invoke(null);
             var isBedrock = fg.getMethod("isFloodgatePlayer", UUID.class);
-            ClassLoader cl = libs.getClass().getClassLoader();
-            Class<?> api = cl.loadClass("me.libraryaddict.disguise.DisguiseAPI");
-            Class<?> disguise = cl.loadClass("me.libraryaddict.disguise.disguisetypes.Disguise");
-            Class<?> type = cl.loadClass("me.libraryaddict.disguise.disguisetypes.DisguiseType");
-            Class<?> mob = cl.loadClass("me.libraryaddict.disguise.disguisetypes.MobDisguise");
-            Object dragonType = type.getField("ENDER_DRAGON").get(null);
-            var apply = api.getMethod("disguiseToPlayers", Entity.class, disguise, Player[].class);
-            var active = api.getMethod("isDisguiseInUse", disguise);
             var task = new org.bukkit.scheduler.BukkitRunnable() {
-                private Set<UUID> previous = Collections.emptySet();
                 @Override public void run() {
                     if (!instanceWorlds.contains(instance) || finishing.contains(instance) || dragon.isDead() || !dragon.isValid()
                             || !getConfig().getBoolean("netherybreis.dragon.bedrock-fallback.enabled", true)) {
                         stopBedrockDragon(instance); return;
                     }
                     try {
-                        List<Player> viewers = new ArrayList<>();
                         Set<UUID> ids = new HashSet<>();
                         for (Player p : dragon.getWorld().getPlayers()) {
-                            if (Boolean.TRUE.equals(isBedrock.invoke(fgApi, p.getUniqueId()))) {
-                                viewers.add(p); ids.add(p.getUniqueId());
-                            }
+                            if (Boolean.TRUE.equals(isBedrock.invoke(fgApi, p.getUniqueId()))) ids.add(p.getUniqueId());
                         }
-                        Object old = bedrockDragonDisguises.get(instance);
-                        if (ids.equals(previous) && (ids.isEmpty() || (old != null && Boolean.TRUE.equals(active.invoke(null, old))))) return;
-                        clearBedrockDragonDisguise(instance);
-                        previous = ids;
-                        if (viewers.isEmpty()) return;
-                        Object visual = mob.getConstructor(type).newInstance(dragonType);
-                        disguise.getMethod("setModifyBoundingBox", boolean.class).invoke(visual, false);
-                        Object watcher = disguise.getMethod("getWatcher").invoke(visual);
-                        watcher.getClass().getMethod("setInvisible", boolean.class).invoke(watcher, false);
-                        bedrockDragonDisguises.put(instance, visual);
-                        apply.invoke(null, dragon, visual, (Object) viewers.toArray(new Player[0]));
-                        if (!Boolean.TRUE.equals(active.invoke(null, visual))) throw new IllegalStateException("LibsDisguises no activo el disfraz");
-                        getLogger().info("Dragon Bedrock: disfraz visual aplicado a " + viewers.size() + " jugador(es) en " + instance);
+                        if (ids.isEmpty()) { clearBedrockDragonVisual(instance); return; }
+                        var visual = bedrockDragonVisuals.get(instance);
+                        if (visual == null || !visual.isValid() || visual.isDead()) {
+                            clearBedrockDragonVisual(instance);
+                            // Allow only this scoped CUSTOM spawn through dungeon protection.
+                            mythicSpawnDepth++;
+                            try {
+                                visual = dragon.getWorld().spawn(dragon.getLocation(), org.bukkit.entity.EnderDragon.class, v -> {
+                                    v.addScoreboardTag(BEDROCK_DRAGON_TAG);
+                                    v.setVisibleByDefault(false);
+                                    v.setAI(false);
+                                    v.setGravity(false);
+                                    v.setSilent(true);
+                                    v.setCollidable(false);
+                                    v.setPersistent(false);
+                                    v.setRemoveWhenFarAway(false);
+                                    v.setPhase(org.bukkit.entity.EnderDragon.Phase.HOVER);
+                                });
+                            } finally { mythicSpawnDepth--; }
+                            bedrockDragonVisuals.put(instance, visual);
+                            if (!visual.isValid()) throw new IllegalStateException("spawn vanilla cancelado");
+                            bedrockDragonOwners.put(visual.getUniqueId(), dragon);
+                            getLogger().info("Dragon Bedrock: entidad vanilla creada en " + instance);
+                        }
+                        Set<UUID> previous = bedrockDragonViewers.getOrDefault(visual.getUniqueId(), Set.of());
+                        for (Player p : dragon.getWorld().getPlayers()) {
+                            UUID id = p.getUniqueId();
+                            if (ids.contains(id) && (!previous.contains(id) || !p.canSee(visual))) p.showEntity(BastionDungeons.this, visual);
+                            else if (!ids.contains(id) && p.canSee(visual)) p.hideEntity(BastionDungeons.this, visual);
+                        }
+                        if (!ids.equals(previous)) getLogger().info("Dragon Bedrock: visual vanilla para " + ids.size() + " jugador(es) en " + instance);
+                        bedrockDragonViewers.put(visual.getUniqueId(), ids);
+                        Location target = dragon.getLocation();
+                        Location current = visual.getLocation();
+                        if (current.distanceSquared(target) > 0.0001 || Math.abs(current.getYaw() - target.getYaw()) > 0.1f
+                                || Math.abs(current.getPitch() - target.getPitch()) > 0.1f) {
+                            visual.teleport(target);
+                        }
+                        visual.setVelocity(new Vector(0, 0, 0));
+                        visual.setFallDistance(0);
                     } catch (ReflectiveOperationException | RuntimeException | LinkageError ex) {
-                        getLogger().warning("Dragon Bedrock: fallo visual (jefe original intacto): " + ex);
+                        getLogger().log(java.util.logging.Level.WARNING, "Dragon Bedrock: fallo visual (jefe original intacto)", ex);
                         stopBedrockDragon(instance);
                     }
                 }
-            }.runTaskTimer(this, 2L, 20L);
+            }.runTaskTimer(this, 2L, 1L);
             bedrockDragonTasks.put(instance, task);
         } catch (ReflectiveOperationException | RuntimeException | LinkageError ex) {
             getLogger().warning("Dragon Bedrock: API incompatible: " + ex);
@@ -3678,6 +3725,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     }
 
     @EventHandler(priority = EventPriority.HIGHEST) public void onMobDeath(EntityDeathEvent event) {
+        if (isBedrockDragonVisual(event.getEntity())) { event.getDrops().clear(); event.setDroppedExp(0); return; }
         String name = event.getEntity().getWorld().getName();
         UUID dead = event.getEntity().getUniqueId();
         String deadType = enemyTypes.get(dead);

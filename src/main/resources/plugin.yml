@@ -1,5 +1,5 @@
 name: BastionDungeons
-version: 1.2.49-bedrock-test
+version: 1.2.50-bedrock-test
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
