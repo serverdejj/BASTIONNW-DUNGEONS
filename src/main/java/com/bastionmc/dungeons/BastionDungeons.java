@@ -206,7 +206,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         Bukkit.getScheduler().runTaskTimer(this, this::checkSchedule, 20L, 20L);
         Bukkit.getScheduler().runTaskTimer(this, this::checkMapVoidPlayers, 5L, 5L);
         Bukkit.getScheduler().runTaskTimer(this, this::tickMobHolograms, 1L, 1L);
-        getLogger().info("Bastion Dungeons 1.2.26-dev listo.");
+        getLogger().info("Bastion Dungeons 1.2.49-bedrock-test listo.");
     }
 
     private void loadSchedule() {
@@ -272,6 +272,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
     private long lastAnnouncedOpen = -1L;
 
     @Override public void onDisable() {
+        for (String instance : new HashSet<>(bedrockDragonTasks.keySet())) stopBedrockDragon(instance);
         for (UUID id : new HashSet<>(mobHolograms.keySet())) removeMobHologram(id);
         for (org.bukkit.scheduler.BukkitTask task : slimeBossTasks.values()) task.cancel();
         slimeBossTasks.clear(); slimeBossJumping.clear();
@@ -1232,6 +1233,7 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
                 msg(player, getConfig().getString("netherybreis.dragon.spawn-message", "&#FF5555&l¡El Dragón Rojo ha aparecido!"));
             }
             startNetherDragonBossBar(instance, dragon);
+            startBedrockDragon(instance, dragon);
             if (entrance && usableHeight > 1) startNetherDragonEntrance(instance, dragon, landing, duration);
             else startNetherDragonRoute(instance, dragon);
         } catch (Exception ex) {
@@ -1241,7 +1243,88 @@ public final class BastionDungeons extends JavaPlugin implements Listener, Comma
         }
     }
 
+    // Bedrock fallback: packet disguise of the existing boss, not a second mob.
+    private final Map<String, org.bukkit.scheduler.BukkitTask> bedrockDragonTasks = new HashMap<>();
+    private final Map<String, Object> bedrockDragonDisguises = new HashMap<>();
+
+    private void clearBedrockDragonDisguise(String instance) {
+        Object disguise = bedrockDragonDisguises.remove(instance);
+        if (disguise != null) {
+            try { disguise.getClass().getMethod("removeDisguise").invoke(disguise); }
+            catch (ReflectiveOperationException | RuntimeException ex) {
+                getLogger().warning("Dragon Bedrock: no se pudo retirar disfraz: " + ex);
+            }
+        }
+    }
+
+    private void stopBedrockDragon(String instance) {
+        var task = bedrockDragonTasks.remove(instance);
+        if (task != null) task.cancel();
+        clearBedrockDragonDisguise(instance);
+    }
+
+    private void startBedrockDragon(String instance, LivingEntity dragon) {
+        stopBedrockDragon(instance);
+        if (!getConfig().getBoolean("netherybreis.dragon.bedrock-fallback.enabled", true)) return;
+        var flood = Bukkit.getPluginManager().getPlugin("floodgate");
+        var libs = Bukkit.getPluginManager().getPlugin("LibsDisguises");
+        if (flood == null || !flood.isEnabled() || libs == null || !libs.isEnabled()) {
+            getLogger().warning("Dragon Bedrock: requiere Floodgate y LibsDisguises en Survival."); return;
+        }
+        try {
+            Class<?> fg = flood.getClass().getClassLoader().loadClass("org.geysermc.floodgate.api.FloodgateApi");
+            Object fgApi = fg.getMethod("getInstance").invoke(null);
+            var isBedrock = fg.getMethod("isFloodgatePlayer", UUID.class);
+            ClassLoader cl = libs.getClass().getClassLoader();
+            Class<?> api = cl.loadClass("me.libraryaddict.disguise.DisguiseAPI");
+            Class<?> disguise = cl.loadClass("me.libraryaddict.disguise.disguisetypes.Disguise");
+            Class<?> type = cl.loadClass("me.libraryaddict.disguise.disguisetypes.DisguiseType");
+            Class<?> mob = cl.loadClass("me.libraryaddict.disguise.disguisetypes.MobDisguise");
+            Object dragonType = type.getField("ENDER_DRAGON").get(null);
+            var apply = api.getMethod("disguiseToPlayers", Entity.class, disguise, Player[].class);
+            var active = api.getMethod("isDisguiseInUse", disguise);
+            var task = new org.bukkit.scheduler.BukkitRunnable() {
+                private Set<UUID> previous = Collections.emptySet();
+                @Override public void run() {
+                    if (!instanceWorlds.contains(instance) || finishing.contains(instance) || dragon.isDead() || !dragon.isValid()
+                            || !getConfig().getBoolean("netherybreis.dragon.bedrock-fallback.enabled", true)) {
+                        stopBedrockDragon(instance); return;
+                    }
+                    try {
+                        List<Player> viewers = new ArrayList<>();
+                        Set<UUID> ids = new HashSet<>();
+                        for (Player p : dragon.getWorld().getPlayers()) {
+                            if (Boolean.TRUE.equals(isBedrock.invoke(fgApi, p.getUniqueId()))) {
+                                viewers.add(p); ids.add(p.getUniqueId());
+                            }
+                        }
+                        Object old = bedrockDragonDisguises.get(instance);
+                        if (ids.equals(previous) && (ids.isEmpty() || (old != null && Boolean.TRUE.equals(active.invoke(null, old))))) return;
+                        clearBedrockDragonDisguise(instance);
+                        previous = ids;
+                        if (viewers.isEmpty()) return;
+                        Object visual = mob.getConstructor(type).newInstance(dragonType);
+                        disguise.getMethod("setModifyBoundingBox", boolean.class).invoke(visual, false);
+                        Object watcher = disguise.getMethod("getWatcher").invoke(visual);
+                        watcher.getClass().getMethod("setInvisible", boolean.class).invoke(watcher, false);
+                        bedrockDragonDisguises.put(instance, visual);
+                        apply.invoke(null, dragon, visual, (Object) viewers.toArray(new Player[0]));
+                        if (!Boolean.TRUE.equals(active.invoke(null, visual))) throw new IllegalStateException("LibsDisguises no activo el disfraz");
+                        getLogger().info("Dragon Bedrock: disfraz visual aplicado a " + viewers.size() + " jugador(es) en " + instance);
+                    } catch (ReflectiveOperationException | RuntimeException | LinkageError ex) {
+                        getLogger().warning("Dragon Bedrock: fallo visual (jefe original intacto): " + ex);
+                        stopBedrockDragon(instance);
+                    }
+                }
+            }.runTaskTimer(this, 2L, 20L);
+            bedrockDragonTasks.put(instance, task);
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ex) {
+            getLogger().warning("Dragon Bedrock: API incompatible: " + ex);
+        }
+    }
+
     private void stopNetherDragonDisplays(String instance) {
+        stopBedrockDragon(instance);
         org.bukkit.scheduler.BukkitTask entry = netherDragonEntranceTasks.remove(instance);
         if (entry != null) entry.cancel();
         org.bukkit.scheduler.BukkitTask barTask = netherDragonBarTasks.remove(instance);

@@ -1,11 +1,11 @@
 name: BastionDungeons
-version: 1.2.48-dragon-waypoint-landing
+version: 1.2.49-bedrock-test
 main: com.bastionmc.dungeons.BastionDungeons
 api-version: '1.21.11'
 author: BASTION MC
 description: Partidas privadas y mazmorras schematic (prototipo)
 depend: [WorldEdit]
-softdepend: [MythicMobs, LibsDisguises, ModelEngine]
+softdepend: [MythicMobs, LibsDisguises, ModelEngine, floodgate]
 commands:
   dungeon:
     description: Comandos de party y mazmorra

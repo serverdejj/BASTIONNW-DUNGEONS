@@ -336,6 +336,8 @@ netherybreis:
       probability: 0.35
       projectile-damage: 8.0
   dragon:
+    bedrock-fallback:
+      enabled: true
     mythic-id: BastionRedDragon
     display-name: '&#FF4545&lDRAGÓN ROJO'
     name-format: '&#FF4545&lDRAGÓN ROJO'
